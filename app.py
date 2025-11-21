@@ -13,48 +13,39 @@ if uploaded_file:
 
     with pdfplumber.open(uploaded_file) as pdf:
 
-        for i, page in enumerate(pdf.pages):
-
+        for page in pdf.pages:
             text = page.extract_text()
             if not text:
                 continue
 
             lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-            # Extract currency ONCE from the page header
+            # Extract currency from: Balance (AED)
             current_currency = None
-            for j, line in enumerate(lines):
-
-                if line == "CURRENCY" and j+1 < len(lines):
-                    next_line = lines[j+1].strip()
-                    if next_line in valid_currencies:
-                        current_currency = next_line
-                        break
-
-                m = re.search(r"CURRENCY\s+([A-Z]{3})", line)
-                if m and m.group(1) in valid_currencies:
+            for line in lines:
+                m = re.search(r"Balance\s*\((AED|USD|EUR|GBP)\)", line)
+                if m:
                     current_currency = m.group(1)
                     break
 
-            # Skip pages without currency OR no transaction table
             if not current_currency:
-                continue
+                continue  # Skip page if no currency identified
 
-            # Extract transactions on this page
+            # Extract transactions
             for line in lines:
-                m = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
-                if not m:
+                match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
+                if not match:
                     continue
 
-                date = m.group(1)
-                parts = m.group(2).split()
+                date = match.group(1)
+                parts = match.group(2).split()
 
-                nums = [p.replace(",", "") for p in parts if re.match(r"-?\d+(\.\d+)?$", p)]
-                if len(nums) < 2:
+                numbers = [p.replace(",", "") for p in parts if re.match(r"-?\d+(\.\d+)?$", p)]
+                if len(numbers) < 2:
                     continue
 
-                amount = float(nums[-2])
-                balance = float(nums[-1])
+                amount = float(numbers[-2])
+                balance = float(numbers[-1])
                 reference = parts[0]
                 description = " ".join(parts[1:-2])
 
@@ -71,5 +62,12 @@ if uploaded_file:
         "Date", "Reference", "Description", "Amount", "Balance", "Currency"
     ])
 
+    st.write("### Extracted Transactions")
     st.dataframe(df)
-    st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"), "wio.csv")
+
+    st.download_button(
+        "Download CSV",
+        df.to_csv(index=False).encode("utf-8"),
+        "wio_transactions.csv",
+        "text/csv"
+    )
