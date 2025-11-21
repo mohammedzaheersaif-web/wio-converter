@@ -7,7 +7,7 @@ import zipfile
 
 # Set page configuration
 st.set_page_config(page_title="WIO Converter", layout="wide")
-st.title("WIO Bank Statement Splitter")
+st.title("WIO Bank Statement Converter")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
@@ -124,3 +124,4 @@ if uploaded_file:
             
     else:
         st.warning("No transactions found. Please check the PDF.")
+
