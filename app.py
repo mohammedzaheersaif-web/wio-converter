@@ -21,59 +21,61 @@ if uploaded_file:
             lines = text.split("\n")
             current_currency = None
 
-            # -------------------------------------------------------
-            # STEP 1: UNIVERSAL CURRENCY DETECTION (AED, GBP, USD)
-            # -------------------------------------------------------
+            # -------------------------------------------
+            # STEP 1: SAFE CURRENCY DETECTION (NO INT BUG)
+            # -------------------------------------------
 
             for i, line in enumerate(lines):
 
-                # Case 1: "CURRENCY GBP", "CURRENCY USD", etc.
+                # Case 1: Format: CURRENCY GBP
                 match = re.search(r"CURRENCY\s+([A-Z]{3})", line)
                 if match:
-                    current_currency = match.group(1)
+                    found = match.group(1)
+                    if found in valid_currencies:
+                        current_currency = found
                     continue
 
-                # Case 2: "CURRENCY" then next line = AED/GBP/USD
+                # Case 2: Line: CURRENCY   + next line is AED/GBP/USD
                 if line.strip() == "CURRENCY" and i + 1 < len(lines):
                     nxt = lines[i + 1].strip()
                     if nxt in valid_currencies:
                         current_currency = nxt
                     continue
 
-                # Case 3: "USD account", "GBP account", "AED account"
+                # Case 3: Format: "USD account", "GBP account"
                 acc_match = re.match(r"^([A-Z]{3})\s+account$", line.strip())
                 if acc_match:
-                    current_currency = acc_match.group(1)
+                    found = acc_match.group(1)
+                    if found in valid_currencies:
+                        current_currency = found
                     continue
 
-            # If currency still not detected, fallback to last known or AED
+            # If no currency detected, assume AED (never INT!)
             if current_currency is None:
                 current_currency = "AED"
 
-            # -------------------------------------------------------
+            # -------------------------------------------
             # STEP 2: EXTRACT TRANSACTIONS
-            # -------------------------------------------------------
-
+            # -------------------------------------------
             for line in lines:
 
-                # Detect date at start of line
+                # Date detection
                 date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
                 if date_match:
 
                     date = date_match.group(1)
                     rest = date_match.group(2).split()
 
-                    # Extract numeric values (amount, balance)
+                    # Extract amount + balance
                     numbers = [p.replace(",", "") for p in rest if re.match(r"-?\d+(\.\d+)?", p)]
-
                     if len(numbers) >= 2:
                         amount = float(numbers[-2])
                         balance = float(numbers[-1])
 
-                        # Extract reference number (always first column)
+                        # Reference number = first token
                         reference = rest[0]
 
-                        # Description is all text between reference → amount
+                        # Description = all tokens except ref + amount + balance
                         description = " ".join(rest[1:-2])
 
                         data.append([
@@ -85,7 +87,6 @@ if uploaded_file:
                             current_currency
                         ])
 
-    # Build DataFrame
     df = pd.DataFrame(data, columns=[
         "Date", "Reference", "Description", "Amount", "Balance", "Currency"
     ])
