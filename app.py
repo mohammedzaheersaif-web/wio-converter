@@ -3,13 +3,20 @@ import pdfplumber
 import pandas as pd
 import re
 
-st.title("WIO Bank PDF to CSV Converter")
+st.title("WIO Bank PDF to CSV Converter (Multi-Page Support)")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
 if uploaded_file:
     data = []
     valid_currencies = ["AED", "USD", "EUR", "GBP"]
+
+    # -------------------------------------------
+    # CHANGE: Initialize currency OUTSIDE the loop
+    # Default to AED. If a specific currency is found,
+    # it will update and persist for subsequent pages.
+    # -------------------------------------------
+    current_currency = "AED"
 
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
@@ -18,10 +25,9 @@ if uploaded_file:
                 continue
 
             lines = text.split("\n")
-            current_currency = None
 
             # -------------------------------------------
-            # STEP 1: SAFE CURRENCY DETECTION
+            # STEP 1: CHECK FOR CURRENCY CHANGE
             # -------------------------------------------
             for i, line in enumerate(lines):
                 # Case 1: Format: CURRENCY GBP
@@ -46,10 +52,9 @@ if uploaded_file:
                     if found in valid_currencies:
                         current_currency = found
                     continue
-
-            # If no currency detected on this page, assume AED
-            if current_currency is None:
-                current_currency = "AED"
+            
+            # Note: We removed the "if current_currency is None" check here.
+            # We now rely on the value persisting from previous pages.
 
             # -------------------------------------------
             # STEP 2: EXTRACT TRANSACTIONS
@@ -63,20 +68,17 @@ if uploaded_file:
                     rest_of_line = date_match.group(2).split()
 
                     # Extract amount + balance
-                    # Filters for things that look like numbers
                     numbers = [p.replace(",", "") for p in rest_of_line if re.match(r"-?\d+(\.\d+)?", p)]
 
-                    # Logic: The last two numbers found are usually Amount and Balance
                     if len(numbers) >= 2:
                         try:
                             amount = float(numbers[-2])
                             balance = float(numbers[-1])
-
-                            # Reference number = first token after date
+                            
+                            # Reference number = first token
                             reference = rest_of_line[0]
-
-                            # Description = everything between Reference and the Numbers
-                            # Note: slicing [1:-2] assumes the last 2 items are amount/balance
+                            
+                            # Description = tokens between Ref and Amounts
                             description = " ".join(rest_of_line[1:-2])
 
                             data.append([
@@ -95,12 +97,13 @@ if uploaded_file:
         "Date", "Reference", "Description", "Amount", "Balance", "Currency"
     ])
 
-    st.write("### Extracted Transactions")
+    st.write(f"### Extracted {len(df)} Transactions")
     st.dataframe(df)
 
-    st.download_button(
-        "Download CSV",
-        df.to_csv(index=False).encode("utf-8"),
-        "wio_transactions.csv",
-        "text/csv"
-    )
+    if not df.empty:
+        st.download_button(
+            "Download CSV",
+            df.to_csv(index=False).encode("utf-8"),
+            "wio_transactions.csv",
+            "text/csv"
+        )
