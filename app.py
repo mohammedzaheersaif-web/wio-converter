@@ -3,7 +3,7 @@ import pdfplumber
 import pandas as pd
 import re
 
-st.title("WIO Bank PDF to CSV Converter (Universal Fix)")
+st.title("WIO Bank PDF to CSV Converter")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
@@ -111,3 +111,4 @@ if uploaded_file:
             "wio_transactions.csv",
             "text/csv"
         )
+
