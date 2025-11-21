@@ -9,7 +9,9 @@ uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"]
 
 if uploaded_file:
     data = []
-    current_currency = None  # track currency for each account block
+    current_currency = None
+
+    valid_currencies = ["AED", "USD", "EUR", "GBP"]
 
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
@@ -19,35 +21,51 @@ if uploaded_file:
 
             lines = text.split("\n")
 
-            for line in lines:
+            for i, line in enumerate(lines):
 
-                # Detect currency section (example: CURRENCY AED)
+                # -------------------------
+                # FIXED CURRENCY DETECTION
+                # -------------------------
+
+                # Case 1: "CURRENCY" on a line alone, currency on next line
+                if line.strip() == "CURRENCY":
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if next_line in valid_currencies:
+                            current_currency = next_line
+                    continue
+
+                # Case 2: "CURRENCY AED" in one line
                 if "CURRENCY" in line:
                     parts = line.split()
-                    try:
-                        idx = parts.index("CURRENCY")
-                        current_currency = parts[idx + 1].strip()
-                    except:
-                        pass
+                    for pt in parts:
+                        if pt in valid_currencies:
+                            current_currency = pt
+                    continue
 
-                # Match date lines: DD/MM/YYYY or DD-MM-YYYY
+                # ---------------------------------
+                # Detect transaction lines by date
+                # ---------------------------------
+
                 date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
                 if date_match:
                     date = date_match.group(1)
                     remaining = date_match.group(2).split()
 
-                    # Extract amount & balance (last 2 numbers)
+                    # Extract numeric values (amount, balance)
                     numbers = [p.replace(",", "") for p in remaining if re.match(r"-?\d+(\.\d+)?", p)]
 
                     if len(numbers) >= 2:
                         amount = float(numbers[-2])
                         balance = float(numbers[-1])
 
-                        # Debit must be negative
-                        if amount > 0 and "-" in remaining:
-                            amount = -abs(amount)
-
-                        # Description = everything except date, ref, amount, balance
+                        # Clean proper debit/credit detection
+                        # WIO negative values already show with "-" sign
+                        # If no sign, assume positive
+                        # We do NOT invert positive values.
+                        # If amount is negative, keep it negative.
+                        # If amount is positive, keep it positive.
+                        
                         description = " ".join(remaining[:-2])
 
                         data.append([
