@@ -22,60 +22,36 @@ if uploaded_file:
             current_currency = None
 
             # -------------------------------------------
-            # STEP 1: SAFE CURRENCY DETECTION (NO INT BUG)
+            # NEW CURRENCY DETECTION
+            # using Balance (XXX)
             # -------------------------------------------
+            for line in lines:
+                m = re.search(r"Balance\s*\((AED|USD|EUR|GBP)\)", line)
+                if m:
+                    current_currency = m.group(1)
+                    break
 
-            for i, line in enumerate(lines):
-
-                # Case 1: Format: CURRENCY GBP
-                match = re.search(r"CURRENCY\s+([A-Z]{3})", line)
-                if match:
-                    found = match.group(1)
-                    if found in valid_currencies:
-                        current_currency = found
-                    continue
-
-                # Case 2: Line: CURRENCY   + next line is AED/GBP/USD
-                if line.strip() == "CURRENCY" and i + 1 < len(lines):
-                    nxt = lines[i + 1].strip()
-                    if nxt in valid_currencies:
-                        current_currency = nxt
-                    continue
-
-                # Case 3: Format: "USD account", "GBP account"
-                acc_match = re.match(r"^([A-Z]{3})\s+account$", line.strip())
-                if acc_match:
-                    found = acc_match.group(1)
-                    if found in valid_currencies:
-                        current_currency = found
-                    continue
-
-            # If no currency detected, assume AED (never INT!)
+            # Skip page if currency not found
             if current_currency is None:
-                current_currency = "AED"
+                continue
 
             # -------------------------------------------
-            # STEP 2: EXTRACT TRANSACTIONS
+            # STEP 2: EXISTING TRANSACTION EXTRACTION
             # -------------------------------------------
             for line in lines:
 
-                # Date detection
                 date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
                 if date_match:
 
                     date = date_match.group(1)
                     rest = date_match.group(2).split()
 
-                    # Extract amount + balance
                     numbers = [p.replace(",", "") for p in rest if re.match(r"-?\d+(\.\d+)?", p)]
                     if len(numbers) >= 2:
                         amount = float(numbers[-2])
                         balance = float(numbers[-1])
 
-                        # Reference number = first token
                         reference = rest[0]
-
-                        # Description = all tokens except ref + amount + balance
                         description = " ".join(rest[1:-2])
 
                         data.append([
