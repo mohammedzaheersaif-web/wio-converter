@@ -3,63 +3,54 @@ import pdfplumber
 import pandas as pd
 import re
 
-st.title("WIO Bank PDF to CSV Converter (Strict Currency Fix)")
+st.title("WIO Bank PDF to CSV Converter (Failsafe Version)")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
 if uploaded_file:
     data = []
-    
-    # -------------------------------------------
-    # CRITICAL FIX: STRICT VALIDATION LIST
-    # The script will now REJECT "DSO", "FZCO", "UAE", etc.
-    # -------------------------------------------
     VALID_CURRENCIES = {"AED", "USD", "EUR", "GBP"}
     
-    # Default to None so we don't guess unless we are sure
+    # Initialize with None
     current_currency = None
 
     with pdfplumber.open(uploaded_file) as pdf:
-        for page in pdf.pages:
+        for page_num, page in enumerate(pdf.pages):
             text = page.extract_text()
             if not text:
                 continue
 
             # -------------------------------------------
-            # STEP 1: FIND CURRENCY (With Validation)
+            # STEP 1: IMPROVED CURRENCY DETECTION
             # -------------------------------------------
-            # Strategy A: Look for "Balance (XXX)" in the table header
-            # This is the most accurate location for Wio statements.
+            found_currency = None
+            
+            # Pattern 1: Table Header "Balance (AED)" - handles newlines
+            # Matches: Balance \n (AED)
             header_match = re.search(r"Balance\s*\n?\s*\(\s*([A-Z]{3})\s*\)", text, re.IGNORECASE)
             
-            # Strategy B: Look for explicit "CURRENCY XXX" label
+            # Pattern 2: Explicit Label "CURRENCY: AED"
+            # Matches: CURRENCY \n AED
             label_match = re.search(r"CURRENCY\s*\n?\s*([A-Z]{3})", text, re.IGNORECASE)
 
-            found_currency = None
+            # Pattern 3: Account Name "USD account" (Common in Wio)
+            # Matches: USD account
+            account_match = re.search(r"\b([A-Z]{3})\s+account\b", text, re.IGNORECASE)
 
-            if header_match:
-                candidate = header_match.group(1).upper()
-                if candidate in VALID_CURRENCIES:
-                    found_currency = candidate
-            
-            # If Strategy A failed, try Strategy B
-            if not found_currency and label_match:
-                candidate = label_match.group(1).upper()
-                if candidate in VALID_CURRENCIES:
-                    found_currency = candidate
-            
-            # Update current_currency ONLY if we found a valid one.
-            # Otherwise, keep the one from the previous page (for multi-page statements).
+            # Check matches against valid list
+            if header_match and header_match.group(1).upper() in VALID_CURRENCIES:
+                found_currency = header_match.group(1).upper()
+            elif label_match and label_match.group(1).upper() in VALID_CURRENCIES:
+                found_currency = label_match.group(1).upper()
+            elif account_match and account_match.group(1).upper() in VALID_CURRENCIES:
+                found_currency = account_match.group(1).upper()
+
+            # Update persistence variable only if we found something valid
             if found_currency:
                 current_currency = found_currency
             
-            # If we still don't have a currency (e.g. Page 1 summary), skip transactions or default
-            if not current_currency:
-                # You can default to AED if you prefer, but it's safer to wait for detection
-                pass 
-
             # -------------------------------------------
-            # STEP 2: EXTRACT TRANSACTIONS
+            # STEP 2: EXTRACT TRANSACTIONS (Always Run)
             # -------------------------------------------
             lines = text.split("\n")
             
@@ -67,11 +58,11 @@ if uploaded_file:
                 # Date detection (DD/MM/YYYY)
                 date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
                 
-                if date_match and current_currency:
+                if date_match:
                     date = date_match.group(1)
                     rest_of_line = date_match.group(2).split()
 
-                    # Filter for valid numbers (remove commas)
+                    # Clean numbers
                     numbers = [p.replace(",", "") for p in rest_of_line if re.match(r"-?\d+(\.\d+)?", p)]
 
                     # We need at least 2 numbers (Amount and Balance)
@@ -81,9 +72,11 @@ if uploaded_file:
                             amount = float(numbers[-2])
                             
                             reference = rest_of_line[0]
-                            
-                            # Join the description parts
                             description = " ".join(rest_of_line[1:-2])
+
+                            # SAFETY NET: If currency is still missing, use placeholder
+                            # instead of skipping the row.
+                            row_currency = current_currency if current_currency else "UNKNOWN"
 
                             data.append([
                                 date,
@@ -91,19 +84,24 @@ if uploaded_file:
                                 description,
                                 amount,
                                 balance,
-                                current_currency
+                                row_currency
                             ])
                         except ValueError:
                             continue
 
     # -------------------------------------------
-    # STEP 3: OUTPUT
+    # STEP 3: DISPLAY & DOWNLOAD
     # -------------------------------------------
     df = pd.DataFrame(data, columns=[
         "Date", "Reference", "Description", "Amount", "Balance", "Currency"
     ])
 
     st.write(f"### Extracted {len(df)} Transactions")
+    
+    # Alert user if there are unknown currencies
+    if "UNKNOWN" in df["Currency"].values:
+        st.warning("⚠️ Some transactions have 'UNKNOWN' currency. Please check the CSV manually.")
+
     st.dataframe(df)
 
     if not df.empty:
