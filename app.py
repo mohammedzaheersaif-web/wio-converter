@@ -8,77 +8,99 @@ st.title("WIO Bank PDF to CSV Converter")
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
 if uploaded_file:
-    all_rows = []
-    last_currency = "AED"
-    valid_curr = ["AED","USD","EUR","GBP"]
+    data = []
+    valid_currencies = ["AED", "USD", "EUR", "GBP"]
 
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
+            text = page.extract_text()
+            if not text:
+                continue
 
-            # Detect currency inside table header
-            extracted = page.extract_text()
-            if extracted:
-                cur_find = re.search(r"Balance\s*\((\w{3})\)", extracted, re.IGNORECASE)
-                if cur_find:
-                    cur = cur_find.group(1).upper()
-                    if cur in valid_curr:
-                        last_currency = cur
+            lines = text.split("\n")
+            current_currency = None
 
-            # Extract tables correctly (instead of free-text)
-            tables = page.extract_tables()
-
-            for table in tables:
-                df = pd.DataFrame(table)
-
-                # Try to detect correct header row
-                for idx, row in df.iterrows():
-                    if (
-                        "Date" in row.values
-                        and "Balance" in row.values
-                        and "Amount" in row.values
-                    ):
-                        df.columns = row
-                        df = df[idx + 1:]
-                        break
-                else:
+            # -------------------------------------------
+            # STEP 1: SAFE CURRENCY DETECTION
+            # -------------------------------------------
+            for i, line in enumerate(lines):
+                # Case 1: Format: CURRENCY GBP
+                match = re.search(r"CURRENCY\s+([A-Z]{3})", line)
+                if match:
+                    found = match.group(1)
+                    if found in valid_currencies:
+                        current_currency = found
                     continue
 
-                # Clean columns only if correct structure
-                if set(["Date","Amount","Balance"]).issubset(df.columns):
+                # Case 2: Line: CURRENCY (and next line is code)
+                if line.strip() == "CURRENCY" and i + 1 < len(lines):
+                    nxt = lines[i + 1].strip()
+                    if nxt in valid_currencies:
+                        current_currency = nxt
+                    continue
 
-                    df["Currency"] = last_currency
+                # Case 3: Format: "USD account", "GBP account"
+                acc_match = re.match(r"^([A-Z]{3})\s+account$", line.strip())
+                if acc_match:
+                    found = acc_match.group(1)
+                    if found in valid_currencies:
+                        current_currency = found
+                    continue
 
-                    df["Date"] = df["Date"].str.extract(r"(\d{2}[/-]\d{2}[/-]\d{4})")
+            # If no currency detected on this page, assume AED
+            if current_currency is None:
+                current_currency = "AED"
 
-                    df["Amount"] = (
-                        df["Amount"]
-                        .str.replace(",", "", regex=False)
-                        .astype(str)
-                        .str.extract(r"(-?\d+\.?\d*)")
-                    )
+            # -------------------------------------------
+            # STEP 2: EXTRACT TRANSACTIONS
+            # -------------------------------------------
+            for line in lines:
+                # Date detection (DD/MM/YYYY or DD-MM-YYYY)
+                date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
+                
+                if date_match:
+                    date = date_match.group(1)
+                    rest_of_line = date_match.group(2).split()
 
-                    df["Balance"] = (
-                        df["Balance"]
-                        .str.replace(",", "", regex=False)
-                        .astype(str)
-                        .str.extract(r"(\d+\.?\d*)")
-                    )
+                    # Extract amount + balance
+                    # Filters for things that look like numbers
+                    numbers = [p.replace(",", "") for p in rest_of_line if re.match(r"-?\d+(\.\d+)?", p)]
 
-                    df.replace("", pd.NA, inplace=True)
-                    df.dropna(subset=["Date"], inplace=True)
+                    # Logic: The last two numbers found are usually Amount and Balance
+                    if len(numbers) >= 2:
+                        try:
+                            amount = float(numbers[-2])
+                            balance = float(numbers[-1])
 
-                    all_rows.append(df)
+                            # Reference number = first token after date
+                            reference = rest_of_line[0]
 
-    if all_rows:
-        final_df = pd.concat(all_rows, ignore_index=True)
-    else:
-        final_df = pd.DataFrame(columns=["Date","Reference","Description","Amount","Balance","Currency"])
+                            # Description = everything between Reference and the Numbers
+                            # Note: slicing [1:-2] assumes the last 2 items are amount/balance
+                            description = " ".join(rest_of_line[1:-2])
 
-    st.dataframe(final_df)
+                            data.append([
+                                date,
+                                reference,
+                                description,
+                                amount,
+                                balance,
+                                current_currency
+                            ])
+                        except ValueError:
+                            continue
+
+    # Create DataFrame
+    df = pd.DataFrame(data, columns=[
+        "Date", "Reference", "Description", "Amount", "Balance", "Currency"
+    ])
+
+    st.write("### Extracted Transactions")
+    st.dataframe(df)
 
     st.download_button(
         "Download CSV",
-        final_df.to_csv(index=False).encode("utf-8"),
+        df.to_csv(index=False).encode("utf-8"),
         "wio_transactions.csv",
         "text/csv"
     )
