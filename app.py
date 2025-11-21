@@ -8,73 +8,95 @@ st.title("WIO Bank PDF to CSV Converter")
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
 if uploaded_file:
+    data = []
     valid_currencies = ["AED", "USD", "EUR", "GBP"]
-    page_currency = {}
 
     with pdfplumber.open(uploaded_file) as pdf:
+        for page in pdf.pages:
 
-        # ----- PASS 1: Detect currency per page -----
-        for i, page in enumerate(pdf.pages):
             text = page.extract_text()
             if not text:
                 continue
+
             lines = text.split("\n")
+            current_currency = None
 
-            for j, line in enumerate(lines):
+            # -------------------------------------------
+            # STEP 1: SAFE CURRENCY DETECTION (NO INT BUG)
+            # -------------------------------------------
 
-                m = re.search(r"CURRENCY\s+([A-Z]{3})", line)
-                if m and m.group(1) in valid_currencies:
-                    page_currency[i] = m.group(1)
-                    break
+            for i, line in enumerate(lines):
 
-                if line.strip() == "CURRENCY" and j + 1 < len(lines):
-                    nxt = lines[j + 1].strip()
+                # Case 1: Format: CURRENCY GBP
+                match = re.search(r"CURRENCY\s+([A-Z]{3})", line)
+                if match:
+                    found = match.group(1)
+                    if found in valid_currencies:
+                        current_currency = found
+                    continue
+
+                # Case 2: Line: CURRENCY   + next line is AED/GBP/USD
+                if line.strip() == "CURRENCY" and i + 1 < len(lines):
+                    nxt = lines[i + 1].strip()
                     if nxt in valid_currencies:
-                        page_currency[i] = nxt
-                        break
+                        current_currency = nxt
+                    continue
 
-        # Carry currency forward
-        last_currency = None
-        for i in range(len(pdf.pages)):
-            if i in page_currency:
-                last_currency = page_currency[i]
-            else:
-                page_currency[i] = last_currency
+                # Case 3: Format: "USD account", "GBP account"
+                acc_match = re.match(r"^([A-Z]{3})\s+account$", line.strip())
+                if acc_match:
+                    found = acc_match.group(1)
+                    if found in valid_currencies:
+                        current_currency = found
+                    continue
 
-        # ----- PASS 2: Extract transactions -----
-        data = []
-        for i, page in enumerate(pdf.pages):
-            text = page.extract_text()
-            if not text:
-                continue
-            lines = text.split("\n")
-
-            current_currency = page_currency.get(i)
-
+            # If no currency detected, assume AED (never INT!)
             if current_currency is None:
-                continue
+                current_currency = "AED"
 
+            # -------------------------------------------
+            # STEP 2: EXTRACT TRANSACTIONS
+            # -------------------------------------------
             for line in lines:
-                match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
-                if not match:
-                    continue
 
-                date = match.group(1)
-                body = match.group(2).split()
+                # Date detection
+                date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
+                if date_match:
 
-                nums = [x.replace(",", "") for x in body if re.match(r"-?\d+(\.\d+)?$", x)]
-                if len(nums) < 2:
-                    continue
+                    date = date_match.group(1)
+                    rest = date_match.group(2).split()
 
-                amount = float(nums[-2])
-                balance = float(nums[-1])
+                    # Extract amount + balance
+                    numbers = [p.replace(",", "") for p in rest if re.match(r"-?\d+(\.\d+)?", p)]
+                    if len(numbers) >= 2:
+                        amount = float(numbers[-2])
+                        balance = float(numbers[-1])
 
-                reference = body[0]
-                description = " ".join(body[1:-2])
+                        # Reference number = first token
+                        reference = rest[0]
 
-                data.append([date, reference, description, amount, balance, current_currency])
+                        # Description = all tokens except ref + amount + balance
+                        description = " ".join(rest[1:-2])
 
-    df = pd.DataFrame(data, columns=["Date", "Reference", "Description", "Amount", "Balance", "Currency"])
+                        data.append([
+                            date,
+                            reference,
+                            description,
+                            amount,
+                            balance,
+                            current_currency
+                        ])
 
+    df = pd.DataFrame(data, columns=[
+        "Date", "Reference", "Description", "Amount", "Balance", "Currency"
+    ])
+
+    st.write("### Extracted Transactions")
     st.dataframe(df)
-    st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"), "wio.csv")
+
+    st.download_button(
+        "Download CSV",
+        df.to_csv(index=False).encode("utf-8"),
+        "wio_transactions.csv",
+        "text/csv"
+    )
