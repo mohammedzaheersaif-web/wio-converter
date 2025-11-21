@@ -3,41 +3,60 @@ import pdfplumber
 import pandas as pd
 import re
 
-st.title("WIO Bank PDF to CSV Converter (Fixed Currency)")
+st.title("WIO Bank PDF to CSV Converter (Strict Currency Fix)")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
 if uploaded_file:
     data = []
     
-    # We will use this to remember currency if a page has transactions 
-    # but lacks a header (unlikely in Wio, but good for safety).
-    current_currency = "AED" 
+    # -------------------------------------------
+    # CRITICAL FIX: STRICT VALIDATION LIST
+    # The script will now REJECT "DSO", "FZCO", "UAE", etc.
+    # -------------------------------------------
+    VALID_CURRENCIES = {"AED", "USD", "EUR", "GBP"}
+    
+    # Default to None so we don't guess unless we are sure
+    current_currency = None
 
     with pdfplumber.open(uploaded_file) as pdf:
-        for page_num, page in enumerate(pdf.pages):
+        for page in pdf.pages:
             text = page.extract_text()
             if not text:
                 continue
 
             # -------------------------------------------
-            # STEP 1: ROBUST CURRENCY DETECTION
+            # STEP 1: FIND CURRENCY (With Validation)
             # -------------------------------------------
-            # Strategy: Look for the Transaction Table Header first. 
-            # In your PDF, it appears as "Balance (AED)" or "Balance \n (AED)"
-            # See Reference [51] in your file.
+            # Strategy A: Look for "Balance (XXX)" in the table header
+            # This is the most accurate location for Wio statements.
+            header_match = re.search(r"Balance\s*\n?\s*\(\s*([A-Z]{3})\s*\)", text, re.IGNORECASE)
             
-            # Search the WHOLE text block, not just line by line, to handle newlines
-            header_match = re.search(r"Balance\s*\n?\s*\(([A-Z]{3})\)", text, re.IGNORECASE)
-            
+            # Strategy B: Look for explicit "CURRENCY XXX" label
+            label_match = re.search(r"CURRENCY\s*\n?\s*([A-Z]{3})", text, re.IGNORECASE)
+
+            found_currency = None
+
             if header_match:
-                current_currency = header_match.group(1).upper()
-            else:
-                # Fallback: Look for "GBP account" or "USD account" labels 
-                # commonly found in the account details section [cite: 82, 123]
-                account_match = re.search(r"\b([A-Z]{3})\s+account\b", text, re.IGNORECASE)
-                if account_match:
-                    current_currency = account_match.group(1).upper()
+                candidate = header_match.group(1).upper()
+                if candidate in VALID_CURRENCIES:
+                    found_currency = candidate
+            
+            # If Strategy A failed, try Strategy B
+            if not found_currency and label_match:
+                candidate = label_match.group(1).upper()
+                if candidate in VALID_CURRENCIES:
+                    found_currency = candidate
+            
+            # Update current_currency ONLY if we found a valid one.
+            # Otherwise, keep the one from the previous page (for multi-page statements).
+            if found_currency:
+                current_currency = found_currency
+            
+            # If we still don't have a currency (e.g. Page 1 summary), skip transactions or default
+            if not current_currency:
+                # You can default to AED if you prefer, but it's safer to wait for detection
+                pass 
 
             # -------------------------------------------
             # STEP 2: EXTRACT TRANSACTIONS
@@ -48,27 +67,22 @@ if uploaded_file:
                 # Date detection (DD/MM/YYYY)
                 date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
                 
-                if date_match:
+                if date_match and current_currency:
                     date = date_match.group(1)
                     rest_of_line = date_match.group(2).split()
 
-                    # Filter for numbers (amounts and balances)
-                    # We remove commas to convert "1,000.00" -> 1000.00
+                    # Filter for valid numbers (remove commas)
                     numbers = [p.replace(",", "") for p in rest_of_line if re.match(r"-?\d+(\.\d+)?", p)]
 
                     # We need at least 2 numbers (Amount and Balance)
                     if len(numbers) >= 2:
                         try:
-                            # The last number is the Running Balance
                             balance = float(numbers[-1])
-                            # The second to last number is the Transaction Amount
                             amount = float(numbers[-2])
                             
-                            # Reference is usually the first item after the date
                             reference = rest_of_line[0]
                             
-                            # Description is everything in between
-                            # We join the parts that are NOT the reference and NOT the last 2 numbers
+                            # Join the description parts
                             description = " ".join(rest_of_line[1:-2])
 
                             data.append([
@@ -83,19 +97,13 @@ if uploaded_file:
                             continue
 
     # -------------------------------------------
-    # STEP 3: DISPLAY & DOWNLOAD
+    # STEP 3: OUTPUT
     # -------------------------------------------
     df = pd.DataFrame(data, columns=[
         "Date", "Reference", "Description", "Amount", "Balance", "Currency"
     ])
 
     st.write(f"### Extracted {len(df)} Transactions")
-    
-    # Optional: Display data grouped by Currency to verify it worked
-    if not df.empty:
-        st.write("Summary by Currency:")
-        st.write(df.groupby("Currency")["Amount"].count())
-        
     st.dataframe(df)
 
     if not df.empty:
