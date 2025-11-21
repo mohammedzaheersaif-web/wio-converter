@@ -20,32 +20,22 @@ if uploaded_file:
 
             lines = text.split("\n")
 
-            # ------------------------------------------------
-            # STEP 1: Detect currency by scanning entire page
-            # ------------------------------------------------
+            # Detect currency
             for i, line in enumerate(lines):
-
-                # format 1:
-                # CURRENCY
-                # AED
                 if line.strip() == "CURRENCY" and i + 1 < len(lines):
                     nxt = lines[i + 1].strip()
                     if nxt in valid_currencies:
                         current_currency = nxt
 
-                # format 2: CURRENCY AED
                 if "CURRENCY" in line:
                     for word in line.split():
                         if word in valid_currencies:
                             current_currency = word
 
-            # if still None, default to AED (optional)
             if current_currency is None:
                 current_currency = "AED"
 
-            # ------------------------------------------------
-            # STEP 2: Extract transactions
-            # ------------------------------------------------
+            # Extract transactions with separate reference number
             for line in lines:
 
                 date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
@@ -53,28 +43,36 @@ if uploaded_file:
                     date = date_match.group(1)
                     rest = date_match.group(2).split()
 
-                    # extract numbers (amount + balance)
+                    # Identify numeric values (amount + balance)
                     numbers = [p.replace(",", "") for p in rest if re.match(r"-?\d+(\.\d+)?", p)]
 
                     if len(numbers) >= 2:
                         amount = float(numbers[-2])
                         balance = float(numbers[-1])
 
-                        description = " ".join(rest[:-2])
+                        # Reference number is ALWAYS the first piece after date
+                        reference = rest[0]
+
+                        # Description is everything between reference and amount columns
+                        description = " ".join(rest[1:-2])
 
                         data.append([
                             date,
+                            reference,
                             description,
                             amount,
                             balance,
                             current_currency
                         ])
 
-    df = pd.DataFrame(data, columns=["Date", "Description", "Amount", "Balance", "Currency"])
+    df = pd.DataFrame(data, columns=["Date", "Reference", "Description", "Amount", "Balance", "Currency"])
 
     st.write("### Extracted Transactions")
     st.dataframe(df)
 
-    csv = df.to_csv(index=False).encode("utf-8")
-
-    st.download_button("Download CSV", csv, "wio_transactions.csv", "text/csv")
+    st.download_button(
+        "Download CSV",
+        df.to_csv(index=False).encode("utf-8"),
+        "wio_transactions.csv",
+        "text/csv"
+    )
