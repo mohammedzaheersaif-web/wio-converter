@@ -1,7 +1,7 @@
 import streamlit as st
 import pdfplumber
 import pandas as pd
-import io
+import re
 
 st.title("WIO Bank PDF to CSV Converter")
 
@@ -9,38 +9,56 @@ uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"]
 
 if uploaded_file:
     data = []
+    current_currency = None  # track currency for each account block
 
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
             if not text:
                 continue
-            
+
             lines = text.split("\n")
+
             for line in lines:
-                parts = line.split()
-                
-                # Detect dates (WIO format: YYYY-MM-DD or DD-MM-YYYY)
-                if len(parts) > 2 and "-" in parts[0]:
-                    date = parts[0]
-                    amount = parts[-1]
 
+                # Detect currency section (example: CURRENCY AED)
+                if "CURRENCY" in line:
+                    parts = line.split()
                     try:
-                        amt = float(amount.replace(",", ""))
+                        idx = parts.index("CURRENCY")
+                        current_currency = parts[idx + 1].strip()
                     except:
-                        continue
+                        pass
 
-                    # Debit = negative
-                    if amt < 0:
-                        amt = -abs(amt)
-                    else:
-                        amt = abs(amt)
+                # Match date lines: DD/MM/YYYY or DD-MM-YYYY
+                date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
+                if date_match:
+                    date = date_match.group(1)
+                    remaining = date_match.group(2).split()
 
-                    description = " ".join(parts[1:-1])
+                    # Extract amount & balance (last 2 numbers)
+                    numbers = [p.replace(",", "") for p in remaining if re.match(r"-?\d+(\.\d+)?", p)]
 
-                    data.append([date, description, amt])
+                    if len(numbers) >= 2:
+                        amount = float(numbers[-2])
+                        balance = float(numbers[-1])
 
-    df = pd.DataFrame(data, columns=["Date", "Description", "Amount"])
+                        # Debit must be negative
+                        if amount > 0 and "-" in remaining:
+                            amount = -abs(amount)
+
+                        # Description = everything except date, ref, amount, balance
+                        description = " ".join(remaining[:-2])
+
+                        data.append([
+                            date,
+                            description,
+                            amount,
+                            balance,
+                            current_currency
+                        ])
+
+    df = pd.DataFrame(data, columns=["Date", "Description", "Amount", "Balance", "Currency"])
 
     st.write("### Extracted Transactions")
     st.dataframe(df)
