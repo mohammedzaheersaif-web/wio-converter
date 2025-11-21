@@ -12,6 +12,8 @@ if uploaded_file:
     valid_currencies = ["AED", "USD", "EUR", "GBP"]
 
     with pdfplumber.open(uploaded_file) as pdf:
+        current_currency = None
+
         for page in pdf.pages:
 
             text = page.extract_text()
@@ -19,73 +21,74 @@ if uploaded_file:
                 continue
 
             lines = text.split("\n")
-            current_currency = None
 
-            # -------------------------------------------
-            # STEP 1: SAFE CURRENCY DETECTION (NO INT BUG)
-            # -------------------------------------------
-
+            # ------------------------------------------------------
+            # UNIVERSAL + STRICT CURRENCY DETECTION (Your PDF exact)
+            # ------------------------------------------------------
             for i, line in enumerate(lines):
 
-                # Case 1: Format: CURRENCY GBP
-                match = re.search(r"CURRENCY\s+([A-Z]{3})", line)
+                # Case A: "CURRENCY <code>"
+                match = re.search(r"CURRENCY\s+([A-Z]{3})", line.strip())
                 if match:
-                    found = match.group(1)
-                    if found in valid_currencies:
-                        current_currency = found
+                    code = match.group(1)
+                    if code in valid_currencies:
+                        current_currency = code
                     continue
 
-                # Case 2: Line: CURRENCY   + next line is AED/GBP/USD
+                # Case B: "CURRENCY" then next line is code
                 if line.strip() == "CURRENCY" and i + 1 < len(lines):
                     nxt = lines[i + 1].strip()
                     if nxt in valid_currencies:
                         current_currency = nxt
                     continue
 
-                # Case 3: Format: "USD account", "GBP account"
+                # Case C: "USD account", "GBP account", etc.
                 acc_match = re.match(r"^([A-Z]{3})\s+account$", line.strip())
                 if acc_match:
-                    found = acc_match.group(1)
-                    if found in valid_currencies:
-                        current_currency = found
+                    code = acc_match.group(1)
+                    if code in valid_currencies:
+                        current_currency = code
                     continue
 
-            # If no currency detected, assume AED (never INT!)
+            # SAFETY fallback
             if current_currency is None:
                 current_currency = "AED"
 
-            # -------------------------------------------
-            # STEP 2: EXTRACT TRANSACTIONS
-            # -------------------------------------------
+            # ------------------------------------------------------
+            # EXTRACT TRANSACTIONS
+            # ------------------------------------------------------
             for line in lines:
 
-                # Date detection
+                # WIO transaction lines always start with date
                 date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
-                if date_match:
+                if not date_match:
+                    continue
 
-                    date = date_match.group(1)
-                    rest = date_match.group(2).split()
+                date = date_match.group(1)
+                rest = date_match.group(2).split()
 
-                    # Extract amount + balance
-                    numbers = [p.replace(",", "") for p in rest if re.match(r"-?\d+(\.\d+)?", p)]
-                    if len(numbers) >= 2:
-                        amount = float(numbers[-2])
-                        balance = float(numbers[-1])
+                # Grab numbers (amount, balance)
+                numbers = [p.replace(",", "") for p in rest if re.match(r"-?\d+(\.\d+)?", p)]
+                if len(numbers) < 2:
+                    continue
 
-                        # Reference number = first token
-                        reference = rest[0]
+                amount = float(numbers[-2])
+                balance = float(numbers[-1])
 
-                        # Description = all tokens except ref + amount + balance
-                        description = " ".join(rest[1:-2])
+                # Reference = first word after date
+                reference = rest[0]
 
-                        data.append([
-                            date,
-                            reference,
-                            description,
-                            amount,
-                            balance,
-                            current_currency
-                        ])
+                # Description = everything until amount
+                description = " ".join(rest[1:-2])
+
+                data.append([
+                    date,
+                    reference,
+                    description,
+                    amount,
+                    balance,
+                    current_currency
+                ])
 
     df = pd.DataFrame(data, columns=[
         "Date", "Reference", "Description", "Amount", "Balance", "Currency"
