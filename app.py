@@ -12,80 +12,78 @@ if uploaded_file:
     valid_currencies = ["AED", "USD", "EUR", "GBP"]
 
     with pdfplumber.open(uploaded_file) as pdf:
-        for page in pdf.pages:
+        current_currency = None
 
+        for page in pdf.pages:
             text = page.extract_text()
             if not text:
                 continue
 
             lines = text.split("\n")
-            current_currency = None
 
-            # -------------------------------------------
-            # STEP 1: SAFE CURRENCY DETECTION (NO INT BUG)
-            # -------------------------------------------
-
+            # Detect currency for this page FIRST
+            page_currency = None
             for i, line in enumerate(lines):
 
-                # Case 1: Format: CURRENCY GBP
-                match = re.search(r"CURRENCY\s+([A-Z]{3})", line)
-                if match:
-                    found = match.group(1)
-                    if found in valid_currencies:
-                        current_currency = found
-                    continue
+                # Case 1: "CURRENCY AED"
+                m = re.search(r"CURRENCY\s+([A-Z]{3})", line)
+                if m:
+                    code = m.group(1).upper()
+                    if code in valid_currencies:
+                        page_currency = code
 
-                # Case 2: Line: CURRENCY   + next line is AED/GBP/USD
+                # Case 2: "CURRENCY" + next line "AED"
                 if line.strip() == "CURRENCY" and i + 1 < len(lines):
                     nxt = lines[i + 1].strip()
                     if nxt in valid_currencies:
-                        current_currency = nxt
-                    continue
+                        page_currency = nxt
 
-                # Case 3: Format: "USD account", "GBP account"
-                acc_match = re.match(r"^([A-Z]{3})\s+account$", line.strip())
-                if acc_match:
-                    found = acc_match.group(1)
-                    if found in valid_currencies:
-                        current_currency = found
-                    continue
+                # Case 3: "EUR account"
+                acc_m = re.match(r"^([A-Z]{3}) account$", line.strip())
+                if acc_m:
+                    code = acc_m.group(1).upper()
+                    if code in valid_currencies:
+                        page_currency = code
 
-            # If no currency detected, assume AED (never INT!)
+            # If currency detected — switch context
+            if page_currency:
+                current_currency = page_currency
+
+            # If still no currency — skip this page entirely
             if current_currency is None:
-                current_currency = "AED"
+                continue
 
-            # -------------------------------------------
-            # STEP 2: EXTRACT TRANSACTIONS
-            # -------------------------------------------
+            # Extract transactions AFTER correct currency set
+            temp_rows = []
             for line in lines:
+                m = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
+                if not m:
+                    continue
 
-                # Date detection
-                date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
-                if date_match:
+                date = m.group(1)
+                body = m.group(2).split()
 
-                    date = date_match.group(1)
-                    rest = date_match.group(2).split()
+                # Extract numeric values: amount + balance
+                nums = [x.replace(",", "") for x in body if re.match(r"-?\d+(\.\d+)?$", x)]
+                if len(nums) < 2:
+                    continue
 
-                    # Extract amount + balance
-                    numbers = [p.replace(",", "") for p in rest if re.match(r"-?\d+(\.\d+)?", p)]
-                    if len(numbers) >= 2:
-                        amount = float(numbers[-2])
-                        balance = float(numbers[-1])
+                amount = float(nums[-2])
+                balance = float(nums[-1])
 
-                        # Reference number = first token
-                        reference = rest[0]
+                reference = body[0]
+                description = " ".join(body[1:-2])
 
-                        # Description = all tokens except ref + amount + balance
-                        description = " ".join(rest[1:-2])
+                temp_rows.append([
+                    date, reference, description,
+                    amount, balance, current_currency
+                ])
 
-                        data.append([
-                            date,
-                            reference,
-                            description,
-                            amount,
-                            balance,
-                            current_currency
-                        ])
+            # Skip USD blocks with NO transactions (your rule B)
+            if len(temp_rows) == 0:
+                continue
+
+            data.extend(temp_rows)
 
     df = pd.DataFrame(data, columns=[
         "Date", "Reference", "Description", "Amount", "Balance", "Currency"
