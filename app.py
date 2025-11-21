@@ -8,90 +8,77 @@ st.title("WIO Bank PDF to CSV Converter")
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
 if uploaded_file:
-    data = []
-    valid_currencies = ["AED", "USD", "EUR", "GBP"]
-    current_currency = None  # carry forward currency
+    all_rows = []
+    last_currency = "AED"
+    valid_curr = ["AED","USD","EUR","GBP"]
 
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
-            text = page.extract_text()
-            if not text:
-                continue
 
-            lines = text.split("\n")
+            # Detect currency inside table header
+            extracted = page.extract_text()
+            if extracted:
+                cur_find = re.search(r"Balance\s*\((\w{3})\)", extracted, re.IGNORECASE)
+                if cur_find:
+                    cur = cur_find.group(1).upper()
+                    if cur in valid_curr:
+                        last_currency = cur
 
-            # -------------------------------------------
-            # UPDATED CURRENCY DETECTION (MOST ROBUST)
-            # -------------------------------------------
-            for line in lines:
+            # Extract tables correctly (instead of free-text)
+            tables = page.extract_tables()
 
-                # Pattern 1: Balance (AED)
-                bal_match = re.search(r"Balance\s*\((AED|USD|EUR|GBP)\)", line, re.IGNORECASE)
-                if bal_match:
-                    cur = bal_match.group(1).upper()
-                    if cur in valid_currencies:
-                        current_currency = cur
-                        continue
+            for table in tables:
+                df = pd.DataFrame(table)
 
-                # Pattern 2: CURRENCY AED
-                cur_match = re.search(r"CURRENCY\s*([A-Z]{3})", line)
-                if cur_match:
-                    cur = cur_match.group(1)
-                    if cur in valid_currencies:
-                        current_currency = cur
-                        continue
+                # Try to detect correct header row
+                for idx, row in df.iterrows():
+                    if (
+                        "Date" in row.values
+                        and "Balance" in row.values
+                        and "Amount" in row.values
+                    ):
+                        df.columns = row
+                        df = df[idx + 1:]
+                        break
+                else:
+                    continue
 
-                # Pattern 3: AED account
-                acc_match = re.match(r"^([A-Z]{3})\s+account$", line.strip(), re.IGNORECASE)
-                if acc_match:
-                    cur = acc_match.group(1).upper()
-                    if cur in valid_currencies:
-                        current_currency = cur
-                        continue
+                # Clean columns only if correct structure
+                if set(["Date","Amount","Balance"]).issubset(df.columns):
 
-            # -------------------------------------------
-            # STEP 2: EXTRACT TRANSACTIONS (same as yours)
-            # -------------------------------------------
-            for line in lines:
+                    df["Currency"] = last_currency
 
-                # Date detection
-                date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
-                if date_match:
+                    df["Date"] = df["Date"].str.extract(r"(\d{2}[/-]\d{2}[/-]\d{4})")
 
-                    date = date_match.group(1)
-                    rest = date_match.group(2).split()
+                    df["Amount"] = (
+                        df["Amount"]
+                        .str.replace(",", "", regex=False)
+                        .astype(str)
+                        .str.extract(r"(-?\d+\.?\d*)")
+                    )
 
-                    # Extract amount + balance
-                    numbers = [p.replace(",", "") for p in rest if re.match(r"-?\d+(\.\d+)?$", p)]
-                    if len(numbers) >= 2:
-                        amount = float(numbers[-2])
-                        balance = float(numbers[-1])
+                    df["Balance"] = (
+                        df["Balance"]
+                        .str.replace(",", "", regex=False)
+                        .astype(str)
+                        .str.extract(r"(\d+\.?\d*)")
+                    )
 
-                        # Reference number = first token
-                        reference = rest[0]
+                    df.replace("", pd.NA, inplace=True)
+                    df.dropna(subset=["Date"], inplace=True)
 
-                        # Description = all tokens except ref + amount + balance
-                        description = " ".join(rest[1:-2])
+                    all_rows.append(df)
 
-                        data.append([
-                            date,
-                            reference,
-                            description,
-                            amount,
-                            balance,
-                            current_currency  # use last detected currency
-                        ])
+    if all_rows:
+        final_df = pd.concat(all_rows, ignore_index=True)
+    else:
+        final_df = pd.DataFrame(columns=["Date","Reference","Description","Amount","Balance","Currency"])
 
-    df = pd.DataFrame(data, columns=[
-        "Date", "Reference", "Description", "Amount", "Balance", "Currency"
-    ])
-
-    st.write("### Extracted Transactions")
-    st.dataframe(df)
+    st.dataframe(final_df)
 
     st.download_button(
         "Download CSV",
-        df.to_csv(index=False).encode("utf-8"),
+        final_df.to_csv(index=False).encode("utf-8"),
         "wio_transactions.csv",
         "text/csv"
     )
