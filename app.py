@@ -7,7 +7,7 @@ import zipfile
 
 # Set page configuration
 st.set_page_config(page_title="WIO Converter", layout="wide")
-st.title("WIO Bank Statement Converter")
+st.title("WIO Bank Statement Splitter (CSV Output)")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
@@ -23,16 +23,13 @@ if uploaded_file:
                 continue
 
             # -------------------------------------------
-            # STEP 1: ROBUST CURRENCY FINDER
+            # STEP 1: ROBUST CURRENCY FINDER (Unchanged)
             # -------------------------------------------
             found_currency = None
             
             # Search strategies (using re.DOTALL to span across newlines)
-            # Strategy 1: "Balance" followed by currency (most reliable in tables)
             balance_match = re.search(r"Balance.*?(" + "|".join(VALID_CURRENCIES) + r")", text, re.IGNORECASE | re.DOTALL)
-            # Strategy 2: "XXX Account" (found in headers)
             account_match = re.search(r"\b(" + "|".join(VALID_CURRENCIES) + r")\s+Account\b", text, re.IGNORECASE)
-            # Strategy 3: "CURRENCY: XXX"
             currency_lbl_match = re.search(r"CURRENCY.*?(" + "|".join(VALID_CURRENCIES) + r")", text, re.IGNORECASE | re.DOTALL)
 
             if balance_match:
@@ -42,12 +39,11 @@ if uploaded_file:
             elif currency_lbl_match:
                 found_currency = currency_lbl_match.group(1).upper()
 
-            # Persist currency across pages
             if found_currency:
                 current_currency = found_currency
 
             # -------------------------------------------
-            # STEP 2: EXTRACT TRANSACTIONS
+            # STEP 2: EXTRACT TRANSACTIONS (Unchanged)
             # -------------------------------------------
             lines = text.split("\n")
             for line in lines:
@@ -68,14 +64,14 @@ if uploaded_file:
                             
                             reference = rest_of_line[0]
                             description = " ".join(rest_of_line[1:-2])
-                            row_currency = current_currency if current_currency else "UNKNOWN" # Safety net
+                            row_currency = current_currency if current_currency else "UNKNOWN"
 
                             data.append([date, reference, description, amount, balance, row_currency])
                         except ValueError:
                             continue
 
     # -------------------------------------------
-    # STEP 3: SMART DOWNLOAD LOGIC (Excel or ZIP)
+    # STEP 3: SMART DOWNLOAD LOGIC (Now using CSV)
     # -------------------------------------------
     df = pd.DataFrame(data, columns=["Date", "Reference", "Description", "Amount", "Balance", "Currency"])
 
@@ -85,38 +81,37 @@ if uploaded_file:
 
         unique_currencies = df["Currency"].unique()
         
-        # CASE A: Only one currency found -> Download single Excel file
+        # Function to generate CSV data
+        def generate_csv_data(df_to_write):
+            # df.to_csv() generates the CSV data as a string, encode it to bytes
+            return df_to_write.to_csv(index=False).encode('utf-8')
+
+
+        # CASE A: Only one currency found -> Download single CSV file
         if len(unique_currencies) == 1:
             currency_name = unique_currencies[0]
             
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name="Transactions")
-                
             st.download_button(
-                label=f"Download {currency_name}.xlsx",
-                data=buffer.getvalue(),
-                file_name=f"{currency_name}.xlsx",
-                mime="application/vnd.ms-excel"
+                label=f"Download {currency_name}.csv",
+                data=generate_csv_data(df),
+                file_name=f"{currency_name}.csv",
+                mime="text/csv" # MIME type for CSV
             )
 
-        # CASE B: Multiple currencies found -> Download as ZIP
+        # CASE B: Multiple currencies found -> Download as ZIP containing CSVs
         else:
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w") as zf:
                 for curr in unique_currencies:
                     subset_df = df[df["Currency"] == curr]
                     
-                    excel_buffer = io.BytesIO()
-                    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-                        # Write transactions to sheet named after currency
-                        subset_df.to_excel(writer, index=False, sheet_name=f"{curr}")
+                    csv_data = generate_csv_data(subset_df)
                     
-                    # Name the file inside the zip exactly as the currency
-                    zf.writestr(f"{curr}.xlsx", excel_buffer.getvalue())
+                    # Name the file inside the zip with .csv extension
+                    zf.writestr(f"{curr}.csv", csv_data)
 
             st.download_button(
-                label="Download All (ZIP)",
+                label="Download All (ZIP of CSVs)",
                 data=zip_buffer.getvalue(),
                 file_name="Wio_Statements.zip",
                 mime="application/zip"
@@ -124,4 +119,3 @@ if uploaded_file:
             
     else:
         st.warning("No transactions found. Please check the PDF.")
-
