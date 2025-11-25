@@ -15,7 +15,7 @@ st.markdown("""
 
 /* Gradient Title Banner */
 .title-container {
-    background: linear-gradient(135deg, #0066FF 0%, #00C2FF 100%);
+    background: linear-gradient(135deg, #0038A8 0%, #00A3FF 100%);
     padding: 18px;
     border-radius: 14px;
     text-align: center;
@@ -228,3 +228,4 @@ if uploaded_file:
                                  "WIO_By_Account.zip", "application/zip")
     else:
         left.warning("⚠️ No transactions found. Check PDF format.")
+
