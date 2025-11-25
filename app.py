@@ -13,22 +13,28 @@ st.set_page_config(page_title="WIO Converter", layout="wide")
 st.markdown("""
 <style>
 
+/* WIO Dark Blue */
+:root {
+    --wio-blue-dark: #00205B;
+    --wio-blue-light: #00A3E0;
+}
+
 /* Gradient Title Banner */
 .title-container {
-    background: linear-gradient(135deg, #0066FF 0%, #00C2FF 100%);
-    padding: 18px;
+    background: linear-gradient(135deg, var(--wio-blue-dark) 0%, var(--wio-blue-light) 100%);
+    padding: 20px;
     border-radius: 14px;
     text-align: center;
     color: white !important;
-    margin-bottom: 20px;
+    margin-bottom: 22px;
 }
 
 /* Side Panel (How It Works) */
 .side-box {
-    background: rgba(0, 102, 255, 0.08);
+    background: rgba(0, 32, 91, 0.08);
     padding: 18px;
     border-radius: 12px;
-    border: 1px solid rgba(0, 102, 255, 0.25);
+    border: 1px solid rgba(0, 32, 91, 0.25);
 }
 
 /* Upload UI box */
@@ -41,7 +47,7 @@ div[data-testid="stFileUploader"] {
 
 /* Buttons */
 div.stDownloadButton > button, .stButton>button {
-    background-color: #0066FF;
+    background-color: var(--wio-blue-dark);
     color: white;
     font-weight: 600;
     font-size: 16px;
@@ -51,20 +57,20 @@ div.stDownloadButton > button, .stButton>button {
     transition: 0.25s;
 }
 div.stDownloadButton > button:hover, .stButton>button:hover {
-    background-color: #004ACC;
+    background-color: #00173F;
     transform: scale(1.04);
 }
 
 /* Metrics badges */
 .metric-badge {
     display: inline-block;
-    background-color: #EAF3FF;
+    background-color: #D9E8FF;
     padding: 6px 12px;
     margin: 6px;
     border-radius: 8px;
     font-size: 14px;
     font-weight: 600;
-    color: #004ACC;
+    color: var(--wio-blue-dark);
 }
 
 /* Dark Mode */
@@ -74,8 +80,8 @@ div.stDownloadButton > button:hover, .stButton>button:hover {
         border-color: rgba(255,255,255,0.15);
     }
     .metric-badge {
-        background-color: #1F6FEB;
-        color: white;
+        background-color: var(--wio-blue-light);
+        color: #00205B;
     }
 }
 
@@ -83,14 +89,14 @@ div.stDownloadButton > button:hover, .stButton>button:hover {
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------
-#                    HEADER SECTION
+#                    HEADER SECTION (Updated)
 # -----------------------------------------------------------
 st.markdown("""
 <div class="title-container">
-    <h1 style="margin:0;">💳 WIO Bank PDF → CSV Converter</h1>
-    <p style="font-size:14px;margin:0;">Smart • Clean • Multi-Currency • Multi-Account</p>
+    <h1 style="margin:0;">WIO Bank Statement Converter</h1>
 </div>
 """, unsafe_allow_html=True)
+
 
 # -----------------------------------------------------------
 #            TWO COLUMN MODERN LAYOUT
@@ -99,17 +105,13 @@ left, right = st.columns([1.5, 1])
 
 right.markdown("""
 <div class="side-box">
-    <h3>📌 How It Works</h3>
-    <ul style="font-size:15px;">
+    <h3 style="margin-bottom:8px;">📌 How It Works</h3>
+    <ul style="font-size:15px; line-height:1.5;">
         <li>Upload your WIO bank PDF 📄</li>
-        <li>App reads all pages using AI-powered parsing 🤖</li>
-        <li>Finds 💱 Currency + 🏦 Account automatically</li>
-        <li>Extracts all ⭐ transactions cleanly</li>
-        <li>Downloads CSV split by Account + Currency ⬇️</li>
+        <li>App detects currency & account numbers automatically 🔍</li>
+        <li>Extracts every transaction accurately ⚙️</li>
+        <li>Downloads clean CSV files by Account + Currency ⬇️</li>
     </ul>
-    <p style="font-size:13px;color:gray;">
-    We ensure data accuracy with in-built validation 🚀
-    </p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -121,7 +123,7 @@ uploaded_file = left.file_uploader("📥 Upload WIO Bank Statement (PDF)", type=
 
 
 # -----------------------------------------------------------
-#                 YOUR ORIGINAL WORKING LOGIC
+#            YOUR ORIGINAL WORKING EXTRACTION LOGIC
 # -----------------------------------------------------------
 if uploaded_file:
     data = []
@@ -135,8 +137,7 @@ if uploaded_file:
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
-            if not text:
-                continue
+            if not text: continue
 
             iban_match = re.search(IBAN_PATTERN, text)
             acct_match = re.search(ACCOUNT_NO_PATTERN, text, re.IGNORECASE)
@@ -152,7 +153,6 @@ if uploaded_file:
                                       text, re.IGNORECASE)
             currency_lbl_match = re.search(r"CURRENCY.*?(" + "|".join(VALID_CURRENCIES) + r")",
                                            text, re.IGNORECASE | re.DOTALL)
-
             if balance_match: found_currency = balance_match.group(1).upper()
             elif account_match: found_currency = account_match.group(1).upper()
             elif currency_lbl_match: found_currency = currency_lbl_match.group(1).upper()
@@ -160,36 +160,37 @@ if uploaded_file:
             if found_currency:
                 current_currency = found_currency
 
-            lines = text.split("\n")
-            for line in lines:
-                date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
-                if date_match:
-                    date = date_match.group(1)
-                    parts = date_match.group(2).split()
-                    nums = [p.replace(",", "") for p in parts if re.match(r"-?\d+(\.\d+)?", p)]
+            for line in text.split("\n"):
+                m = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
+                if not m:
+                    continue
+                date = m.group(1)
+                parts = m.group(2).split()
+                nums = [p.replace(",", "") for p in parts if re.match(r"-?\d+(\.\d+)?", p)]
 
-                    if len(nums) >= 2:
-                        try:
-                            balance = float(nums[-1])
-                            amount = float(nums[-2])
-                            ref = parts[0]
-                            desc = " ".join(parts[1:-2])
-                            curr = current_currency or "UNKNOWN"
-                            acct = current_account_id or "UNKNOWN_ACCOUNT"
-                            data.append([date, ref, desc, amount, balance, curr, acct])
-                        except:
-                            continue
+                if len(nums) >= 2:
+                    try:
+                        balance = float(nums[-1])
+                        amount = float(nums[-2])
+                        ref = parts[0]
+                        desc = " ".join(parts[1:-2])
+                        data.append([
+                            date, ref, desc, amount, balance,
+                            current_currency or "UNKNOWN",
+                            current_account_id or "UNKNOWN_ACCOUNT"
+                        ])
+                    except:
+                        continue
 
     df = pd.DataFrame(data, columns=["Date","Reference","Description","Amount","Balance","Currency","Account"])
 
     if not df.empty:
         left.success(f"✨ Extracted {len(df)} transactions!")
 
-        # 📊 Show usage metrics
         left.markdown(
             f"""
-            <span class='metric-badge'>💱 Currencies: {", ".join(df["Currency"].unique())}</span>
-            <span class='metric-badge'>🏦 Accounts: {len(df["Account"].unique())}</span>
+            <span class='metric-badge'>💱 {", ".join(df["Currency"].unique())}</span>
+            <span class='metric-badge'>🏦 {len(df["Account"].unique())} Accounts</span>
             """,
             unsafe_allow_html=True,
         )
@@ -199,32 +200,30 @@ if uploaded_file:
         unique_acc = df["Account"].unique()
         unique_curr = df["Currency"].unique()
 
-        def to_csv(x): return x.to_csv(index=False).encode('utf-8')
+        def csv(x): return x.to_csv(index=False).encode('utf-8')
 
         if len(unique_acc) == 1:
             if len(unique_curr) == 1:
-                left.download_button(
-                    label="⬇️ Download CSV",
-                    data=to_csv(df),
-                    file_name=f"{unique_curr[0]}.csv",
-                    mime="text/csv",
-                )
+                left.download_button("⬇️ Download CSV",
+                    csv(df), f"{unique_curr[0]}.csv", "text/csv")
             else:
                 z = io.BytesIO()
-                with zipfile.ZipFile(z, "w") as zipf:
+                with zipfile.ZipFile(z, "w") as zf:
                     for c in unique_curr:
-                        subset = df[df["Currency"] == c]
-                        zipf.writestr(f"{c}.csv", to_csv(subset))
-                left.download_button("⬇️ Download ZIP", z.getvalue(), "Statements.zip", "application/zip")
+                        zf.writestr(f"{c}.csv", csv(df[df["Currency"] == c]))
+                left.download_button("⬇️ Download ZIP",
+                    z.getvalue(), "WIO_Statements.zip","application/zip")
+
         else:
             z = io.BytesIO()
-            with zipfile.ZipFile(z, "w") as zipf:
+            with zipfile.ZipFile(z, "w") as zf:
                 for a in unique_acc:
-                    for c in df["Currency"].unique():
+                    for c in unique_curr:
                         sub = df[(df["Account"] == a) & (df["Currency"] == c)]
                         if not sub.empty:
-                            zipf.writestr(f"{a}_{c}.csv", to_csv(sub))
-            left.download_button("⬇️ Download All Accounts (ZIP)", z.getvalue(),
-                                 "WIO_By_Account.zip", "application/zip")
+                            zf.writestr(f"{a}_{c}.csv", csv(sub))
+            left.download_button("⬇️ Download By Account (ZIP)",
+                z.getvalue(),"WIO_By_Account.zip","application/zip")
+
     else:
-        left.warning("⚠️ No transactions found. Check PDF format.")
+        left.warning("⚠️ No transactions found. Check PDF.")
