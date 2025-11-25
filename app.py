@@ -17,7 +17,7 @@ st.sidebar.title("⚙️ How to Use")
 st.sidebar.markdown(
     """
     Upload your WIO Bank Statement PDF below. 
-    The tool automatically extracts and separates transactions by their unique **IBAN** and **Currency**.
+    The tool will automatically extract and separate transactions by their unique **IBAN** and **Currency**.
     """
 )
 st.sidebar.markdown("---")
@@ -43,8 +43,8 @@ if uploaded_file:
         VALID_CURRENCIES = ["AED", "USD", "EUR", "GBP"]
         current_account_key = None 
 
-        # Regex to find an IBAN (starts with AE, followed by 22 digits)
-        IBAN_REGEX = r"(AE\d{22})" 
+        # 🔑 FIX HERE: Regex to find an IBAN, allowing spaces/newlines between AE and digits
+        IBAN_REGEX = r"(AE\s*\d{22})" 
 
         with pdfplumber.open(uploaded_file) as pdf:
             for page_num, page in enumerate(pdf.pages):
@@ -66,7 +66,8 @@ if uploaded_file:
                 found_currency = None
 
                 if iban_match:
-                    found_iban = iban_match.group(1).strip()
+                    # Clean the captured group to remove whitespace before storing
+                    found_iban = re.sub(r'\s+', '', iban_match.group(1)).strip()
                 
                 if currency_match:
                     found_currency = currency_match.group(1).upper().strip()
@@ -82,19 +83,15 @@ if uploaded_file:
                 
                 for line in lines:
                     # Check if the line looks like a quoted, comma-separated transaction row: 
-                    # starts with " and contains the date pattern inside quotes.
                     if line.startswith('"') and re.match(r'^"\d{2}[/-]\d{2}[/-]\d{4}"', line) and current_account_key:
                         
-                        # Use re.findall to extract all fields enclosed in double quotes. 
-                        # This handles commas within the description field correctly.
                         fields = re.findall(r'"(.*?)"', line)
                         
-                        if len(fields) >= 5: # Expecting at least Date, Ref., Description, Amount, Balance
+                        if len(fields) >= 5: 
                             date = fields[0]
                             reference = fields[1]
                             description = fields[2]
                             
-                            # The Amount and Balance are the last two fields. Remove internal commas.
                             balance_str = fields[-1].replace(',', '').strip()
                             amount_str = fields[-2].replace(',', '').strip()
                             
@@ -110,50 +107,49 @@ if uploaded_file:
                                     currency, iban 
                                 ])
                             except ValueError:
-                                # Skip lines where the amount/balance couldn't be converted to a number
                                 continue
 
         # -------------------------------------------
         # STEP 3: SMART DOWNLOAD LOGIC
         # -------------------------------------------
+        
+        # We must check if data is empty before creating the DataFrame to avoid the Key Error
+        if not data:
+             st.error("❌ No transactions or account keys found in the PDF. The file structure may have changed. Please check the PDF.")
+             return # Exit the app execution
+
         df = pd.DataFrame(data, columns=["Date", "Reference", "Description", "Amount", "Balance", "Currency", "IBAN"])
 
-        if not df.empty:
-            st.success(f"✅ Successfully processed {len(df)} transactions.")
-            
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                st.subheader("Data Preview")
-                # Drop IBAN for cleaner display, but keep it in the download
-                st.dataframe(df.drop(columns=['IBAN']), use_container_width=True)
+        st.success(f"✅ Successfully processed {len(df)} transactions.")
+        
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.subheader("Data Preview")
+            st.dataframe(df.drop(columns=['IBAN']), use_container_width=True)
 
-            with col2:
-                st.subheader("Download Files")
-                unique_account_keys = df["IBAN"] + "-" + df["Currency"]
-                
-                def generate_csv_data(df_to_write):
-                    return df_to_write.to_csv(index=False).encode('utf-8')
-
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w") as zf:
-                    for account_key in unique_account_keys.unique():
-                        iban, currency = account_key.split('-')
-                        subset_df = df[(df["IBAN"] == iban) & (df["Currency"] == currency)].copy()
-                        
-                        csv_data = generate_csv_data(subset_df)
-                        
-                        # File Naming: Currency-Last3DigitsOfIBAN.csv (e.g., AED-940.csv)
-                        file_name = f"{currency}-{iban[-3:]}.csv"
-                        zf.writestr(file_name, csv_data)
-
-                    st.download_button(
-                        label=f"📦 Download All {len(unique_account_keys.unique())} Accounts (ZIP)",
-                        data=zip_buffer.getvalue(),
-                        file_name="Wio_Statements_Split_by_Account.zip",
-                        mime="application/zip",
-                        key='multi_account_download'
-                    )
+        with col2:
+            st.subheader("Download Files")
+            unique_account_keys = df["IBAN"] + "-" + df["Currency"]
             
-        else:
-            st.error("❌ No transactions found. The PDF format may have changed. Please contact the developer.")
+            def generate_csv_data(df_to_write):
+                return df_to_write.to_csv(index=False).encode('utf-8')
+
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zf:
+                for account_key in unique_account_keys.unique():
+                    iban, currency = account_key.split('-')
+                    subset_df = df[(df["IBAN"] == iban) & (df["Currency"] == currency)].copy()
+                    
+                    csv_data = generate_csv_data(subset_df)
+                    
+                    file_name = f"{currency}-{iban[-3:]}.csv"
+                    zf.writestr(file_name, csv_data)
+
+                st.download_button(
+                    label=f"📦 Download All {len(unique_account_keys.unique())} Accounts (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name="Wio_Statements_Split_by_Account.zip",
+                    mime="application/zip",
+                    key='multi_account_download'
+                )
