@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import io
 import zipfile
-from collections import defaultdict
+import csv # New: Using Python's built-in CSV parser
 
 # --- APP CONFIGURATION ---
 st.set_page_config(
@@ -17,8 +17,7 @@ st.set_page_config(
 st.sidebar.title("⚙️ How to Use")
 st.sidebar.markdown(
     """
-    This tool extracts WIO statement data using the **most flexible table autodetection** available in `pdfplumber`. 
-    It separates transactions by their unique **IBAN** and **Currency**.
+    This tool extracts WIO statement data by treating the raw PDF text as a **quoted CSV file**. This is the most resilient method for this document type.
     """
 )
 st.sidebar.markdown("---")
@@ -29,30 +28,25 @@ st.sidebar.markdown(
     - **Splitting:** Accounts of the same currency (e.g., two AED accounts) are split into separate files based on their unique IBAN.
     """
 )
-st.sidebar.info("This version relies entirely on the drawn lines within the PDF to define table structure.")
+st.sidebar.info("This version completely bypasses unreliable table detection by using direct CSV parsing on the raw text.")
 
 
 # --- MAIN PAGE CONTENT ---
-st.title("WIO Statement Converter & Splitter 💡")
-st.caption("Using the most flexible auto-detection to bypass coordinate issues.")
+st.title("WIO Statement Converter & Splitter 🚀")
+st.caption("Using raw text extraction and CSV parsing for maximum reliability.")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
-# --- CORE FUNCTION: EXTRACT TRANSACTIONS USING TARGETED TABLE DETECTION ---
+# --- CORE FUNCTION: EXTRACT TRANSACTIONS USING PURE TEXT/CSV PARSING ---
 def extract_transactions(pdf_file):
     data = []
     VALID_CURRENCIES = ["AED", "USD", "EUR", "GBP"]
     current_account_key = None # Key format: IBAN-CURRENCY
     IBAN_REGEX = r"(AE\s*\d{22})" 
     
-    # 1. Table Extraction Settings: Max Flexibility
-    # We rely purely on the visible horizontal and vertical lines in the PDF to define the table structure.
-    table_settings = {
-        "vertical_strategy": "lines", # Use ANY vertical line found
-        "horizontal_strategy": "lines", # Use ANY horizontal line found
-        "intersection_y_tolerance": 5,
-    }
-
+    # Standard WIO transaction header pattern
+    HEADER_PATTERN = re.compile(r'"Date"\s*,\s*"Ref\. Number"\s*,\s*"Description"\s*,\s*"Amount\s*\(Incl\. VAT\)"\s*,\s*"Balance\s*\((\w+)\)"', re.IGNORECASE)
+    
     def clean_and_float(value):
         """Cleans a string by removing commas, stripping whitespace, and converting to float."""
         if not value: return None
@@ -60,13 +54,14 @@ def extract_transactions(pdf_file):
 
     with pdfplumber.open(pdf_file) as pdf:
         for page_num, page in enumerate(pdf.pages):
-            text = page.extract_text()
+            # Extract raw text from the entire page
+            raw_text = page.extract_text()
             
             # -------------------------------------------
             # STEP 1: ROBUST ACCOUNT KEY FINDER (IBAN + Currency)
             # -------------------------------------------
-            iban_match = re.search(IBAN_REGEX, text)
-            currency_match = re.search(r"Balance.*?(" + "|".join(VALID_CURRENCIES) + r")", text, re.IGNORECASE | re.DOTALL)
+            # Find the IBAN anywhere on the page
+            iban_match = re.search(IBAN_REGEX, raw_text)
             
             found_iban = None
             found_currency = None
@@ -74,6 +69,8 @@ def extract_transactions(pdf_file):
             if iban_match:
                 found_iban = re.sub(r'\s+', '', iban_match.group(1)).strip()
             
+            # The currency is usually found in the balance section near the IBAN/Account details
+            currency_match = re.search(r"Balance.*?(" + "|".join(VALID_CURRENCIES) + r")", raw_text, re.IGNORECASE | re.DOTALL)
             if currency_match:
                 found_currency = currency_match.group(1).upper().strip()
 
@@ -82,83 +79,54 @@ def extract_transactions(pdf_file):
             
             if not current_account_key:
                 continue
+
+            # -------------------------------------------
+            # STEP 2: PURE TEXT/CSV EXTRACTION (Bypasses Table Detection)
+            # -------------------------------------------
+            
+            # Find the starting position of the transaction table header
+            header_match = HEADER_PATTERN.search(raw_text)
+            
+            if header_match:
+                # Get the text starting right after the header line
+                transactions_block = raw_text[header_match.end():]
                 
-            # -------------------------------------------
-            # STEP 2: TABLE EXTRACTION (Maximum Flexibility)
-            # We use the raw page to capture all tables, including the transaction table.
-            # -------------------------------------------
-            
-            tables = page.extract_tables(table_settings=table_settings)
+                # Stop parsing when we hit the footer/disclaimer text
+                transactions_block = transactions_block.split("Please review this account statement")[0]
+                
+                # Use Python's built-in CSV reader to parse the text block
+                f = io.StringIO(transactions_block)
+                reader = csv.reader(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
 
-            if not tables:
-                continue
-            
-            # Since the "lines" strategy can return multiple detected tables (like the Summary of Accounts),
-            # we iterate through all of them, expecting the transaction table to be the largest or most consistent one.
-            for table in tables:
-                # The table must have a decent amount of rows and columns to be considered a transaction table
-                if len(table) < 3 or len(table[0]) < 4:
-                    continue
+                for row in reader:
+                    # Filter out empty rows or rows that are too short (less than 5 expected fields)
+                    row = [col.replace('\n', ' ').strip() for col in row if col.strip() != '']
+                    
+                    if len(row) < 5 or not re.match(r"\d{2}[/-]\d{2}[/-]\d{2,4}", row[0]):
+                        continue
 
-                # Start iterating from the second row (skipping header)
-                for row in table[1:]:
-                    # Clean up data cells: remove newlines and excess spaces
-                    cleaned_row = [cell.replace('\n', ' ').strip() if cell else '' for cell in row if cell is not None]
-                    
-                    # We expect at least Date + Ref/Desc + Amount + Balance (minimum 4 columns)
-                    if len(cleaned_row) < 4:
-                        continue
-                    
-                    # 1. Date Check: Must start with a date format (MM/DD/YYYY or DD/MM/YYYY)
-                    if not re.match(r"\d{2}[/-]\d{2}[/-]\d{2,4}", cleaned_row[0]):
-                        continue
-                    
+                    # Expected columns: Date, Ref. Number, Description, Amount (Incl. VAT), Balance
                     try:
-                        date = cleaned_row[0]
+                        date = row[0]
+                        reference = row[1]
+                        # Description might span multiple text columns, so join everything before the last two (Amount/Balance)
+                        description = row[2] 
                         
-                        # 2. Dynamic Numeric Extraction (Find the last two floats)
-                        numeric_values = []
-                        text_parts = []
+                        # Amount and Balance are the last two columns.
+                        amount = clean_and_float(row[-2])
+                        balance = clean_and_float(row[-1])
                         
-                        # Iterate backward from the end of the list, ignoring the Date
-                        for item in reversed(cleaned_row[1:]): 
-                            try:
-                                float_val = clean_and_float(item)
-                                if float_val is not None and len(numeric_values) < 2:
-                                    numeric_values.append(float_val)
-                                else:
-                                    text_parts.insert(0, item) 
-                            except ValueError:
-                                text_parts.insert(0, item)
-                        
-                        # Ensure we found both Amount and Balance
-                        if len(numeric_values) < 2:
+                        if amount is None or balance is None:
                             continue
-                        
-                        # The first number found (closest to the end of the row) is Balance, the second is Amount.
-                        balance = numeric_values[0] 
-                        amount = numeric_values[1] 
 
-                        # 3. Assign Text Fields (Reference and Description)
-                        if len(text_parts) >= 2:
-                            reference = text_parts[0]
-                            description = " ".join(text_parts[1:])
-                        elif len(text_parts) == 1:
-                            reference = text_parts[0]
-                            description = ""
-                        else:
-                            reference = ""
-                            description = ""
-
-                        # Final Data Append
                         iban, currency = current_account_key.split('-')
                         
                         data.append([
                             date, reference, description, amount, balance, 
                             currency, iban 
                         ])
-                    except Exception as e:
-                        # Continue to next row if any parsing error occurs
+                    except Exception:
+                        # Skip if any conversion or indexing error occurs
                         continue
                         
     return data
@@ -166,20 +134,18 @@ def extract_transactions(pdf_file):
 if uploaded_file:
     # Use a try-except block for robust error handling during PDF processing
     try:
-        with st.spinner("Analyzing PDF pages and extracting transaction tables..."):
+        with st.spinner("Analyzing PDF pages and parsing data block..."):
             data = extract_transactions(uploaded_file)
     except Exception as e:
-        # Catch any high-level file reading error
-        st.error(f"A critical error occurred during file processing. Please verify the PDF is not corrupted or password protected: {e}")
+        st.error(f"A critical error occurred during file processing: {e}. The file may be corrupt or not a standard WIO statement.")
         st.stop()
         
     # -------------------------------------------
     # STEP 3: SMART DOWNLOAD LOGIC
     # -------------------------------------------
     
-    # Check if data is empty to prevent errors
     if not data:
-        st.error("❌ No transactions or account keys found. This likely means the table structure in the PDF is not defined by lines. Please ensure you are uploading a standard WIO statement.")
+        st.error("❌ No transactions or account keys found. The CSV-like transaction data could not be located in the raw text.")
         st.stop()
         
     # Final DataFrame Creation
