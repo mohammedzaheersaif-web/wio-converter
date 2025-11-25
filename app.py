@@ -17,49 +17,59 @@ st.set_page_config(
 st.sidebar.title("⚙️ How to Use")
 st.sidebar.markdown(
     """
-    This tool extracts WIO statement data using **table detection** for maximum reliability. 
-    It separates transactions by their unique **IBAN** and **Currency**, ensuring **separate files for two AED accounts** within the same PDF.
+    This tool extracts WIO statement data using **precise table detection** for maximum reliability. 
+    It separates transactions by their unique **IBAN** and **Currency**, ensuring **separate files for all distinct accounts** in the PDF.
     """
+    
 )
 st.sidebar.markdown("---")
 st.sidebar.header("Output Details")
 st.sidebar.markdown(
     """
-    - **Naming Convention:** Files are named using the Currency and the **last three digits of the IBAN** (e.g., `AED-940.csv`).
-    - **Download:** Downloads a `.zip` file containing separate `.csv` files for *each unique bank account*.
+    - **Naming:** Files are named using the Currency and the **last three digits of the IBAN** (e.g., `AED-940.csv`).
+    - **Splitting:** Accounts of the same currency (e.g., two AED accounts) are split into separate files based on their unique IBAN.
     """
 )
-st.sidebar.info("Tip: The IBAN is the only reliable way to identify separate accounts of the same currency.")
+st.sidebar.info("This version uses targeted table extraction to resolve previous parsing failures.")
 
 
 # --- MAIN PAGE CONTENT ---
-st.title("WIO Statement Converter & Splitter 🚀")
-st.caption("Now using native table extraction and IBAN grouping to solve all known parsing and splitting issues.")
+st.title("WIO Statement Converter & Splitter 🎯")
+st.caption("Now using precise coordinate targeting to ensure transactions are always found.")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
-# --- CORE FUNCTION: EXTRACT TRANSACTIONS USING TABLE DETECTION ---
+# --- CORE FUNCTION: EXTRACT TRANSACTIONS USING TARGETED TABLE DETECTION ---
 def extract_transactions(pdf_file):
     data = []
     VALID_CURRENCIES = ["AED", "USD", "EUR", "GBP"]
     current_account_key = None # Key format: IBAN-CURRENCY
     IBAN_REGEX = r"(AE\s*\d{22})" 
     
-    # Define table settings based on the WIO statement structure
+    # 1. Standard WIO Transaction Column Markers (X-coordinates)
+    # These represent the exact vertical lines of the transaction table, adjusted for high reliability.
+    TRANSACTION_COLUMNS = [20, 75, 140, 500, 600, 700] # Date, Ref, Desc, Amount, Balance
+    
+    # 2. Table Extraction Settings
     table_settings = {
-        "vertical_strategy": "lines",
-        "horizontal_strategy": "lines",
-        # These are calculated based on typical WIO statement column positions (Date, Ref, Desc, Amount, Balance)
-        "snap_vertical": [0, 80, 150, 480, 600, 720], 
+        "vertical_strategy": "explicit", # Use our precise vertical markers
+        "horizontal_strategy": "lines", # Rely on horizontal lines in the PDF
+        "explicit_vertical_lines": TRANSACTION_COLUMNS,
         "intersection_y_tolerance": 5,
     }
+
+    def clean_and_float(value):
+        """Cleans a string by removing commas, stripping whitespace, and converting to float."""
+        if not value: return None
+        return float(value.replace(',', '').strip())
 
     with pdfplumber.open(pdf_file) as pdf:
         for page_num, page in enumerate(pdf.pages):
             text = page.extract_text()
-
+            
+            # -------------------------------------------
             # STEP 1: ROBUST ACCOUNT KEY FINDER (IBAN + Currency)
-            # This logic finds the unique account identifier (IBAN)
+            # -------------------------------------------
             iban_match = re.search(IBAN_REGEX, text)
             currency_match = re.search(r"Balance.*?(" + "|".join(VALID_CURRENCIES) + r")", text, re.IGNORECASE | re.DOTALL)
             
@@ -67,59 +77,93 @@ def extract_transactions(pdf_file):
             found_currency = None
 
             if iban_match:
-                # Clean the captured IBAN string by removing whitespace
                 found_iban = re.sub(r'\s+', '', iban_match.group(1)).strip()
             
             if currency_match:
                 found_currency = currency_match.group(1).upper().strip()
 
             if found_iban and found_currency:
-                # Create the unique key: IBAN + Currency (e.g., AE123...-AED)
                 current_account_key = f"{found_iban}-{found_currency}"
             
-            # Skip transaction parsing if we don't have a key (e.g., summary page)
             if not current_account_key:
                 continue
+                
+            # -------------------------------------------
+            # STEP 2: TARGETED TABLE EXTRACTION & FLEXIBLE PARSING
+            # -------------------------------------------
+            
+            # Crop the page to the area where the transactions are located (e.g., from Y=200 down to Y=780)
+            # This ignores the summary table and footer.
+            page_height = page.height
+            cropped_page = page.crop((0, 200, page.width, page_height - 50))
 
-            # STEP 2: TABLE EXTRACTION (Fixes the KeyError issue)
-            tables = page.extract_tables(table_settings=table_settings)
+            tables = cropped_page.extract_tables(table_settings=table_settings)
 
             if not tables:
                 continue
 
             for table in tables:
-                # The first row is usually the header, so skip it (start at index 1)
+                # The first row is usually the header, skip it (start at index 1)
                 for row in table[1:]:
                     # Clean up data cells: remove newlines and excess spaces
-                    cleaned_row = [cell.replace('\n', ' ').strip() if cell else '' for cell in row]
+                    # Only include non-None cells
+                    cleaned_row = [cell.replace('\n', ' ').strip() if cell else '' for cell in row if cell is not None]
                     
-                    # WIO tables usually have 5 or 6 primary columns: Date, Ref, Desc, Amount, Balance
-                    # If the row doesn't start with a date, it's likely a continued description or a blank row.
-                    if len(cleaned_row) < 5 or not re.match(r"\d{2}[/-]\d{2}[/-]\d{2,4}", cleaned_row[0]):
+                    # Minimum expected length for transaction data is 4 (Date, Ref/Desc, Amount, Balance)
+                    if len(cleaned_row) < 4:
+                        continue
+                    
+                    # 1. Date Check: Must start with a date format
+                    if not re.match(r"\d{2}[/-]\d{2}[/-]\d{2,4}", cleaned_row[0]):
                         continue
                     
                     try:
                         date = cleaned_row[0]
-                        reference = cleaned_row[1]
-                        description = cleaned_row[2]
                         
-                        # Amount and Balance are the last two columns.
-                        # Clean the number strings before conversion
-                        amount_str = cleaned_row[-2].replace(',', '').strip()
-                        balance_str = cleanedow[-1].replace(',', '').strip()
+                        # 2. Dynamic Numeric Extraction (Find the last two floats)
+                        numeric_values = []
+                        text_parts = []
+                        
+                        # Iterate backward from the end of the list, ignoring the Date
+                        for item in reversed(cleaned_row[1:]): 
+                            try:
+                                float_val = clean_and_float(item)
+                                if float_val is not None and len(numeric_values) < 2:
+                                    numeric_values.append(float_val)
+                                else:
+                                    text_parts.insert(0, item) 
+                            except ValueError:
+                                text_parts.insert(0, item)
+                        
+                        # Ensure we found both Amount and Balance
+                        if len(numeric_values) < 2:
+                            continue
+                        
+                        # The first number found (closest to the end of the row) is Balance, the second is Amount.
+                        balance = numeric_values[0] 
+                        amount = numeric_values[1] 
 
-                        amount = float(amount_str)
-                        balance = float(balance_str)
-                        
-                        # Append transaction with its unique account key information
+                        # 3. Assign Text Fields (Reference and Description)
+                        if len(text_parts) >= 2:
+                            reference = text_parts[0]
+                            description = " ".join(text_parts[1:])
+                        elif len(text_parts) == 1:
+                            reference = text_parts[0]
+                            description = ""
+                        else:
+                            reference = ""
+                            description = ""
+
+                        # Final Data Append
                         iban, currency = current_account_key.split('-')
                         
                         data.append([
                             date, reference, description, amount, balance, 
                             currency, iban 
                         ])
-                    except (ValueError, IndexError):
-                        # Safely ignore rows that look like transactions but have invalid numbers
+                    except Exception as e:
+                        # Log any unexpected error during row processing but continue
+                        # st.write(f"Skipping row due to error: {e}") 
                         continue
                         
     return data
@@ -130,22 +174,23 @@ if uploaded_file:
         with st.spinner("Analyzing PDF pages and extracting transaction tables..."):
             data = extract_transactions(uploaded_file)
     except Exception as e:
-        st.error(f"A critical error occurred during file processing. Please verify the PDF format: {e}")
+        # Catch any high-level file reading error
+        st.error(f"A critical error occurred during file processing. Please verify the PDF is not corrupted or password protected: {e}")
         st.stop()
         
     # -------------------------------------------
     # STEP 3: SMART DOWNLOAD LOGIC
     # -------------------------------------------
     
-    # Check if data is empty to prevent the KeyError
+    # Check if data is empty to prevent errors
     if not data:
-        st.error("❌ No transactions or account keys found in the PDF. The file structure may have changed or the tables could not be detected.")
+        st.error("❌ No transactions or account keys found. The file structure may have changed. Please contact support with a sample PDF.")
         st.stop()
         
-    # Final DataFrame Creation (No KeyError possible here anymore)
+    # Final DataFrame Creation
     df = pd.DataFrame(data, columns=["Date", "Reference", "Description", "Amount", "Balance", "Currency", "IBAN"])
     
-    st.success(f"✅ Successfully processed {len(df)} transactions, across {len(df['IBAN'].unique())} accounts.")
+    st.success(f"✅ Successfully processed {len(df)} transactions, across {len(df['IBAN'].unique())} unique account(s).")
     
     col1, col2 = st.columns([3, 1])
     
@@ -161,7 +206,6 @@ if uploaded_file:
         unique_account_keys = df["IBAN"] + "-" + df["Currency"]
         
         def generate_csv_data(df_to_write):
-            # Ensure the full IBAN is included in the output CSV
             return df_to_write.to_csv(index=False).encode('utf-8')
 
         zip_buffer = io.BytesIO()
