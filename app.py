@@ -17,7 +17,7 @@ st.sidebar.title("⚙️ How to Use")
 st.sidebar.markdown(
     """
     Upload your WIO Bank Statement PDF below. 
-    The tool will automatically extract and separate transactions by their unique **IBAN** and **Currency**.
+    The tool automatically extracts and separates transactions by their unique **IBAN** and **Currency**.
     """
 )
 st.sidebar.markdown("---")
@@ -41,7 +41,6 @@ if uploaded_file:
     with st.spinner("Processing PDF and extracting data..."):
         data = []
         VALID_CURRENCIES = ["AED", "USD", "EUR", "GBP"]
-        # New key: Tracks the combination of IBAN and Currency (e.g., "AE123...-AED")
         current_account_key = None 
 
         # Regex to find an IBAN (starts with AE, followed by 22 digits)
@@ -74,12 +73,8 @@ if uploaded_file:
 
                 # If we found both, create the new unique key
                 if found_iban and found_currency:
-                    # Update the key that persists for the following transactions
                     current_account_key = f"{found_iban}-{found_currency}"
                 
-                # IMPORTANT: If the statement is split across pages, the IBAN/Currency 
-                # might not be on every single page header. We rely on the key 
-                # from the previous detection if the current page has no header.
 
                 # -------------------------------------------
                 # STEP 2: EXTRACT TRANSACTIONS
@@ -87,9 +82,9 @@ if uploaded_file:
                 lines = text.split("\n")
                 
                 for line in lines:
-                    date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
+                    # Regex to find Date (DD/MM/YYYY or DD/MM/YY) at the start of the line
+                    date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{2,4})\s+(.*)", line)
                     
-                    # Only process if a date is found AND we know which account it belongs to
                     if date_match and current_account_key:
                         date = date_match.group(1)
                         rest_of_line = date_match.group(2).split()
@@ -108,11 +103,15 @@ if uploaded_file:
 
                                 data.append([
                                     date, reference, description, amount, balance, 
-                                    currency, iban # Store both currency and IBAN
+                                    currency, iban 
                                 ])
                             except ValueError:
                                 continue
 
+        # --- DIAGNOSTIC LINE ADDED HERE ---
+        st.info(f"Diagnostic: Number of transaction rows found: {len(data)}")
+        # ----------------------------------
+        
         # -------------------------------------------
         # STEP 3: SMART DOWNLOAD LOGIC
         # -------------------------------------------
@@ -136,7 +135,6 @@ if uploaded_file:
                 def generate_csv_data(df_to_write):
                     return df_to_write.to_csv(index=False).encode('utf-8')
 
-                # All statements, even single-currency, now download as a ZIP for consistency
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, "w") as zf:
                     for account_key in unique_account_keys.unique():
