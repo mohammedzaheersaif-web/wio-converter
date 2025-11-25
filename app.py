@@ -17,10 +17,9 @@ st.set_page_config(
 st.sidebar.title("⚙️ How to Use")
 st.sidebar.markdown(
     """
-    This tool extracts WIO statement data using **precise table detection** for maximum reliability. 
-    It separates transactions by their unique **IBAN** and **Currency**, ensuring **separate files for all distinct accounts** in the PDF.
+    This tool extracts WIO statement data using the **most flexible table autodetection** available in `pdfplumber`. 
+    It separates transactions by their unique **IBAN** and **Currency**.
     """
-    
 )
 st.sidebar.markdown("---")
 st.sidebar.header("Output Details")
@@ -30,12 +29,12 @@ st.sidebar.markdown(
     - **Splitting:** Accounts of the same currency (e.g., two AED accounts) are split into separate files based on their unique IBAN.
     """
 )
-st.sidebar.info("This version uses targeted table extraction to resolve previous parsing failures.")
+st.sidebar.info("This version relies entirely on the drawn lines within the PDF to define table structure.")
 
 
 # --- MAIN PAGE CONTENT ---
-st.title("WIO Statement Converter & Splitter 🎯")
-st.caption("Now using precise coordinate targeting to ensure transactions are always found.")
+st.title("WIO Statement Converter & Splitter 💡")
+st.caption("Using the most flexible auto-detection to bypass coordinate issues.")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
@@ -46,15 +45,11 @@ def extract_transactions(pdf_file):
     current_account_key = None # Key format: IBAN-CURRENCY
     IBAN_REGEX = r"(AE\s*\d{22})" 
     
-    # 1. Standard WIO Transaction Column Markers (X-coordinates)
-    # These represent the exact vertical lines of the transaction table, adjusted for high reliability.
-    TRANSACTION_COLUMNS = [20, 75, 140, 500, 600, 700] # Date, Ref, Desc, Amount, Balance
-    
-    # 2. Table Extraction Settings
+    # 1. Table Extraction Settings: Max Flexibility
+    # We rely purely on the visible horizontal and vertical lines in the PDF to define the table structure.
     table_settings = {
-        "vertical_strategy": "explicit", # Use our precise vertical markers
-        "horizontal_strategy": "lines", # Rely on horizontal lines in the PDF
-        "explicit_vertical_lines": TRANSACTION_COLUMNS,
+        "vertical_strategy": "lines", # Use ANY vertical line found
+        "horizontal_strategy": "lines", # Use ANY horizontal line found
         "intersection_y_tolerance": 5,
     }
 
@@ -89,31 +84,32 @@ def extract_transactions(pdf_file):
                 continue
                 
             # -------------------------------------------
-            # STEP 2: TARGETED TABLE EXTRACTION & FLEXIBLE PARSING
+            # STEP 2: TABLE EXTRACTION (Maximum Flexibility)
+            # We use the raw page to capture all tables, including the transaction table.
             # -------------------------------------------
             
-            # Crop the page to the area where the transactions are located (e.g., from Y=200 down to Y=780)
-            # This ignores the summary table and footer.
-            page_height = page.height
-            cropped_page = page.crop((0, 200, page.width, page_height - 50))
-
-            tables = cropped_page.extract_tables(table_settings=table_settings)
+            tables = page.extract_tables(table_settings=table_settings)
 
             if not tables:
                 continue
-
+            
+            # Since the "lines" strategy can return multiple detected tables (like the Summary of Accounts),
+            # we iterate through all of them, expecting the transaction table to be the largest or most consistent one.
             for table in tables:
-                # The first row is usually the header, skip it (start at index 1)
+                # The table must have a decent amount of rows and columns to be considered a transaction table
+                if len(table) < 3 or len(table[0]) < 4:
+                    continue
+
+                # Start iterating from the second row (skipping header)
                 for row in table[1:]:
                     # Clean up data cells: remove newlines and excess spaces
-                    # Only include non-None cells
                     cleaned_row = [cell.replace('\n', ' ').strip() if cell else '' for cell in row if cell is not None]
                     
-                    # Minimum expected length for transaction data is 4 (Date, Ref/Desc, Amount, Balance)
+                    # We expect at least Date + Ref/Desc + Amount + Balance (minimum 4 columns)
                     if len(cleaned_row) < 4:
                         continue
                     
-                    # 1. Date Check: Must start with a date format
+                    # 1. Date Check: Must start with a date format (MM/DD/YYYY or DD/MM/YYYY)
                     if not re.match(r"\d{2}[/-]\d{2}[/-]\d{2,4}", cleaned_row[0]):
                         continue
                     
@@ -162,8 +158,7 @@ def extract_transactions(pdf_file):
                             currency, iban 
                         ])
                     except Exception as e:
-                        # Log any unexpected error during row processing but continue
-                        # st.write(f"Skipping row due to error: {e}") 
+                        # Continue to next row if any parsing error occurs
                         continue
                         
     return data
@@ -184,7 +179,7 @@ if uploaded_file:
     
     # Check if data is empty to prevent errors
     if not data:
-        st.error("❌ No transactions or account keys found. The file structure may have changed. Please contact support with a sample PDF.")
+        st.error("❌ No transactions or account keys found. This likely means the table structure in the PDF is not defined by lines. Please ensure you are uploading a standard WIO statement.")
         st.stop()
         
     # Final DataFrame Creation
