@@ -43,7 +43,7 @@ if uploaded_file:
         VALID_CURRENCIES = ["AED", "USD", "EUR", "GBP"]
         current_account_key = None 
 
-        # 🔑 FIX HERE: Regex to find an IBAN, allowing spaces/newlines between AE and digits
+        # Regex to find an IBAN, allowing spaces/newlines between AE and digits
         IBAN_REGEX = r"(AE\s*\d{22})" 
 
         with pdfplumber.open(uploaded_file) as pdf:
@@ -56,10 +56,7 @@ if uploaded_file:
                 # STEP 1: ROBUST ACCOUNT KEY FINDER (IBAN + Currency)
                 # -------------------------------------------
                 
-                # 1. Look for IBAN 
                 iban_match = re.search(IBAN_REGEX, text)
-                
-                # 2. Look for Currency in the transaction header 
                 currency_match = re.search(r"Balance.*?(" + "|".join(VALID_CURRENCIES) + r")", text, re.IGNORECASE | re.DOTALL)
                 
                 found_iban = None
@@ -77,16 +74,21 @@ if uploaded_file:
                 
 
                 # -------------------------------------------
-                # STEP 2: ROBUST TRANSACTION EXTRACTION (FIXED FOR CSV-LIKE ROWS)
+                # STEP 2: HYPER-ROBUST TRANSACTION EXTRACTION (Final attempt without adding new libraries)
                 # -------------------------------------------
                 lines = text.split("\n")
                 
                 for line in lines:
+                    line = line.strip() # Crucial: Remove leading/trailing whitespace
+                    
                     # Check if the line looks like a quoted, comma-separated transaction row: 
                     if line.startswith('"') and re.match(r'^"\d{2}[/-]\d{2}[/-]\d{4}"', line) and current_account_key:
                         
+                        # Use re.findall to extract all fields enclosed in double quotes. 
+                        # This should be highly stable for the WIO format.
                         fields = re.findall(r'"(.*?)"', line)
                         
+                        # Check field count before proceeding
                         if len(fields) >= 5: 
                             date = fields[0]
                             reference = fields[1]
@@ -107,16 +109,18 @@ if uploaded_file:
                                     currency, iban 
                                 ])
                             except ValueError:
+                                # Skip lines where the amount/balance couldn't be converted to a number
                                 continue
 
         # -------------------------------------------
         # STEP 3: SMART DOWNLOAD LOGIC
         # -------------------------------------------
         
-        # We must check if data is empty before creating the DataFrame to avoid the Key Error
+        # Check if data is empty before creating the DataFrame to avoid the Key Error
         if not data:
-             st.error("❌ No transactions or account keys found in the PDF. The file structure may have changed. Please check the PDF.")
-             return # Exit the app execution
+            # We now rely solely on the explicit check to avoid the error
+            st.error("❌ No transactions or account keys found in the PDF. The file structure may have changed. Please check the PDF.")
+            return
 
         df = pd.DataFrame(data, columns=["Date", "Reference", "Description", "Amount", "Balance", "Currency", "IBAN"])
 
