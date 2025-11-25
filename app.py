@@ -5,164 +5,182 @@ import re
 import io
 import zipfile
 
-# --- APP CONFIGURATION ---
-st.set_page_config(
-    page_title="WIO Statement Splitter", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# --- SIDEBAR ---
-st.sidebar.title("⚙️ How to Use")
-st.sidebar.markdown(
-    """
-    **Sequential Parsing Mode**
-    
-    This version separates accounts based on their **sequence** in the PDF file.
-    
-    - It detects a new account whenever it sees the **"ACCOUNT TYPE"** header.
-    - Files are named by sequence and currency (e.g., `1_AED.csv`, `2_USD.csv`).
-    """
-)
-st.sidebar.markdown("---")
-st.sidebar.info("Tip: This solves issues where the IBAN could not be read. It simply treats the first account found as Account 1, the next as Account 2, etc.")
-
-# --- MAIN PAGE CONTENT ---
-st.title("WIO Statement Converter & Splitter 🔢")
-st.caption("Sequential Account Parsing Mode")
+# Set page configuration
+st.set_page_config(page_title="WIO Converter", layout="wide")
+st.title("WIO Bank Statement Converter")
 
 uploaded_file = st.file_uploader("Upload WIO Bank Statement (PDF)", type=["pdf"])
 
-def extract_transactions(pdf_file):
+if uploaded_file:
     data = []
     VALID_CURRENCIES = ["AED", "USD", "EUR", "GBP"]
-    
-    # Sequence Trackers
-    current_account_id = 0
-    current_currency = "UNKNOWN"
-    is_inside_account = False # Flag to know if we have started processing an account
-    
-    # Regex to find the start of a new account section
-    # "ACCOUNT TYPE" appears at the top of the details page for each account
-    NEW_ACCOUNT_MARKER = "ACCOUNT TYPE"
+    current_currency = None
+    current_account_id = None  # Track which account this page belongs to
 
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
+    # Patterns to detect account identifiers
+    IBAN_PATTERN = r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"
+    ACCOUNT_NO_PATTERN = r"(Account\s*(Number|No\.?)\s*[:\-]?\s*)(\d{6,20})"
+
+    with pdfplumber.open(uploaded_file) as pdf:
+        for page_num, page in enumerate(pdf.pages):
             text = page.extract_text()
             if not text:
                 continue
-            
-            # --- STEP 1: DETECT NEW ACCOUNT START ---
-            if NEW_ACCOUNT_MARKER in text:
-                # We found a new account section!
-                current_account_id += 1
-                is_inside_account = True
-                
-                # Try to find the currency for this new account
-                # Look for "Balance (XXX)" or "CURRENCY XXX"
-                currency_match = re.search(r"Balance.*?(" + "|".join(VALID_CURRENCIES) + r")", text, re.IGNORECASE | re.DOTALL)
-                
-                if currency_match:
-                    current_currency = currency_match.group(1).upper().strip()
-                else:
-                    # Fallback: Look for "USD Account", "AED Account" text
-                    acc_name_match = re.search(r"\b(" + "|".join(VALID_CURRENCIES) + r")\s+Account\b", text, re.IGNORECASE)
-                    if acc_name_match:
-                        current_currency = acc_name_match.group(1).upper().strip()
-            
-            # If we haven't hit the first account yet (e.g. we are on the summary page), skip
-            if not is_inside_account:
-                continue
 
-            # --- STEP 2: LINE-BY-LINE CSV PARSING ---
-            lines = text.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                
-                # PATTERN: Line starts with a quote, followed by a date
-                # Example: "29/09/2025","P736..."
-                if re.match(r'^"\d{2}[/-]\d{2}[/-]\d{2,4}"', line):
-                    
-                    # Extract fields
-                    fields = re.findall(r'"(.*?)"', line)
-                    fields = [f.strip().replace('\n', ' ') for f in fields]
-                    
-                    if len(fields) >= 4:
-                        try:
-                            date = fields[0]
-                            reference = fields[1]
-                            
-                            # Amount and Balance are always the last two
-                            balance_str = fields[-1].replace(',', '')
-                            amount_str = fields[-2].replace(',', '')
-                            
-                            description = " ".join(fields[2:-2])
-                            
-                            amount = float(amount_str)
-                            balance = float(balance_str)
-                            
-                            data.append([
-                                date, reference, description, amount, balance, 
-                                current_currency, current_account_id
-                            ])
-                            
-                        except (ValueError, IndexError):
-                            continue
+            # -------------------------------------------
+            # STEP 0: DETECT ACCOUNT ID ON THIS PAGE
+            # -------------------------------------------
+            # Try IBAN first
+            iban_match = re.search(IBAN_PATTERN, text)
+            acct_match = re.search(ACCOUNT_NO_PATTERN, text, re.IGNORECASE)
 
-    return data
+            if iban_match:
+                current_account_id = iban_match.group(0)
+            elif acct_match:
+                # Group 3 is the actual number part
+                current_account_id = acct_match.group(3)
 
-if uploaded_file:
-    try:
-        with st.spinner("Scanning document sequence..."):
-            data = extract_transactions(uploaded_file)
-            
-        if not data:
-            st.error("❌ No transactions found. Please ensure the PDF contains 'ACCOUNT TYPE' headers and standard transaction lines.")
-            st.stop()
-            
-        # Create DataFrame
-        df = pd.DataFrame(data, columns=["Date", "Reference", "Description", "Amount", "Balance", "Currency", "AccountID"])
-        
-        st.success(f"✅ Extracted {len(df)} transactions from {len(df['AccountID'].unique())} sequential accounts.")
-        
-        # --- PREVIEW & DOWNLOAD ---
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            st.subheader("Preview")
-            st.dataframe(df.drop(columns=['AccountID']), use_container_width=True)
-            
-        with col2:
-            st.subheader("Download")
-            
-            def to_csv(d):
-                return d.to_csv(index=False).encode('utf-8')
-            
-            # Group by AccountID (The Sequence Number)
-            unique_ids = df['AccountID'].unique()
-            unique_ids.sort()
-            
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w") as zf:
-                for acc_id in unique_ids:
-                    # Filter data
-                    subset = df[df['AccountID'] == acc_id]
-                    
-                    # Get currency for this chunk
-                    curr = subset['Currency'].iloc[0]
-                    
-                    # File Name: [Sequence]_[Currency].csv -> e.g. "1_AED.csv"
-                    fname = f"Account_{acc_id}_{curr}.csv"
-                    
-                    zf.writestr(fname, to_csv(subset))
-            
-            st.download_button(
-                label="📦 Download All (ZIP)",
-                data=zip_buffer.getvalue(),
-                file_name="Wio_Statements_Seq.zip",
-                mime="application/zip"
+            # If still nothing ever found, we will later fallback to "UNKNOWN_ACCOUNT"
+
+            # -------------------------------------------
+            # STEP 1: ROBUST CURRENCY FINDER (Your logic)
+            # -------------------------------------------
+            found_currency = None
+
+            balance_match = re.search(
+                r"Balance.*?(" + "|".join(VALID_CURRENCIES) + r")",
+                text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            account_match = re.search(
+                r"\b(" + "|".join(VALID_CURRENCIES) + r")\s+Account\b",
+                text,
+                re.IGNORECASE,
+            )
+            currency_lbl_match = re.search(
+                r"CURRENCY.*?(" + "|".join(VALID_CURRENCIES) + r")",
+                text,
+                re.IGNORECASE | re.DOTALL,
             )
 
-    except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
+            if balance_match:
+                found_currency = balance_match.group(1).upper()
+            elif account_match:
+                found_currency = account_match.group(1).upper()
+            elif currency_lbl_match:
+                found_currency = currency_lbl_match.group(1).upper()
+
+            if found_currency:
+                current_currency = found_currency
+
+            # -------------------------------------------
+            # STEP 2: EXTRACT TRANSACTIONS (Your logic)
+            # -------------------------------------------
+            lines = text.split("\n")
+            for line in lines:
+                # Date detection
+                date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{4})\s+(.*)", line)
+
+                if date_match:
+                    date = date_match.group(1)
+                    rest_of_line = date_match.group(2).split()
+
+                    # Clean and find numbers
+                    numbers = [
+                        p.replace(",", "")
+                        for p in rest_of_line
+                        if re.match(r"-?\d+(\.\d+)?", p)
+                    ]
+
+                    if len(numbers) >= 2:
+                        try:
+                            # Assign Amount and Balance (last two numbers)
+                            balance = float(numbers[-1])
+                            amount = float(numbers[-2])
+
+                            reference = rest_of_line[0]
+                            description = " ".join(rest_of_line[1:-2])
+                            row_currency = current_currency if current_currency else "UNKNOWN"
+                            row_account = current_account_id if current_account_id else "UNKNOWN_ACCOUNT"
+
+                            data.append(
+                                [date, reference, description, amount, balance, row_currency, row_account]
+                            )
+                        except ValueError:
+                            continue
+
+    # -------------------------------------------
+    # STEP 3: SMART DOWNLOAD LOGIC (CSV + multi-account)
+    # -------------------------------------------
+    df = pd.DataFrame(
+        data,
+        columns=["Date", "Reference", "Description", "Amount", "Balance", "Currency", "Account"],
+    )
+
+    if not df.empty:
+        st.success(f"Processed {len(df)} transactions.")
+        st.dataframe(df)
+
+        unique_accounts = df["Account"].unique()
+        unique_currencies = df["Currency"].unique()
+
+        # Function to generate CSV data
+        def generate_csv_data(df_to_write: pd.DataFrame) -> bytes:
+            return df_to_write.to_csv(index=False).encode("utf-8")
+
+        # CASE 1: Only one account present in this statement
+        if len(unique_accounts) == 1:
+            # Preserve your original behavior by currency
+            if len(unique_currencies) == 1:
+                currency_name = unique_currencies[0]
+                st.download_button(
+                    label=f"Download {currency_name}.csv",
+                    data=generate_csv_data(df),
+                    file_name=f"{currency_name}.csv",
+                    mime="text/csv",
+                )
+            else:
+                # Multiple currencies, single account -> ZIP by currency
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w") as zf:
+                    for curr in unique_currencies:
+                        subset_df = df[df["Currency"] == curr]
+                        csv_data = generate_csv_data(subset_df)
+                        zf.writestr(f"{curr}.csv", csv_data)
+
+                st.download_button(
+                    label="Download All (ZIP of CSVs)",
+                    data=zip_buffer.getvalue(),
+                    file_name="Wio_Statements.zip",
+                    mime="application/zip",
+                )
+
+        # CASE 2: Multiple accounts in the same PDF
+        else:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zf:
+                for acc in unique_accounts:
+                    acc_df = df[df["Account"] == acc]
+                    acc_currencies = acc_df["Currency"].unique()
+
+                    for curr in acc_currencies:
+                        subset_df = acc_df[acc_df["Currency"] == curr]
+                        if subset_df.empty:
+                            continue
+                        csv_data = generate_csv_data(subset_df)
+
+                        # Either flat naming:
+                        filename = f"{acc}_{curr}.csv"
+                        # Or folder-style: filename = f"{acc}/{curr}.csv"
+
+                        zf.writestr(filename, csv_data)
+
+            st.download_button(
+                label="Download All Accounts (ZIP of CSVs)",
+                data=zip_buffer.getvalue(),
+                file_name="Wio_Statements_By_Account.zip",
+                mime="application/zip",
+            )
+
+    else:
+        st.warning("No transactions found. Please check the PDF.")
