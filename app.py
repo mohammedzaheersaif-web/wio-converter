@@ -56,10 +56,10 @@ if uploaded_file:
                 # STEP 1: ROBUST ACCOUNT KEY FINDER (IBAN + Currency)
                 # -------------------------------------------
                 
-                # 1. Look for IBAN (must be done first, as it defines the account block)
+                # 1. Look for IBAN 
                 iban_match = re.search(IBAN_REGEX, text)
                 
-                # 2. Look for Currency in the transaction header (e.g., Balance (AED))
+                # 2. Look for Currency in the transaction header 
                 currency_match = re.search(r"Balance.*?(" + "|".join(VALID_CURRENCIES) + r")", text, re.IGNORECASE | re.DOTALL)
                 
                 found_iban = None
@@ -71,47 +71,48 @@ if uploaded_file:
                 if currency_match:
                     found_currency = currency_match.group(1).upper().strip()
 
-                # If we found both, create the new unique key
                 if found_iban and found_currency:
                     current_account_key = f"{found_iban}-{found_currency}"
                 
 
                 # -------------------------------------------
-                # STEP 2: EXTRACT TRANSACTIONS
+                # STEP 2: ROBUST TRANSACTION EXTRACTION (FIXED FOR CSV-LIKE ROWS)
                 # -------------------------------------------
                 lines = text.split("\n")
                 
                 for line in lines:
-                    # Regex to find Date (DD/MM/YYYY or DD/MM/YY) at the start of the line
-                    date_match = re.match(r"(\d{2}[/-]\d{2}[/-]\d{2,4})\s+(.*)", line)
-                    
-                    if date_match and current_account_key:
-                        date = date_match.group(1)
-                        rest_of_line = date_match.group(2).split()
-                        numbers = [p.replace(",", "") for p in rest_of_line if re.match(r"-?\d+(\.\d+)?", p)]
-
-                        if len(numbers) >= 2:
+                    # Check if the line looks like a quoted, comma-separated transaction row: 
+                    # starts with " and contains the date pattern inside quotes.
+                    if line.startswith('"') and re.match(r'^"\d{2}[/-]\d{2}[/-]\d{4}"', line) and current_account_key:
+                        
+                        # Use re.findall to extract all fields enclosed in double quotes. 
+                        # This handles commas within the description field correctly.
+                        fields = re.findall(r'"(.*?)"', line)
+                        
+                        if len(fields) >= 5: # Expecting at least Date, Ref., Description, Amount, Balance
+                            date = fields[0]
+                            reference = fields[1]
+                            description = fields[2]
+                            
+                            # The Amount and Balance are the last two fields. Remove internal commas.
+                            balance_str = fields[-1].replace(',', '').strip()
+                            amount_str = fields[-2].replace(',', '').strip()
+                            
                             try:
-                                balance = float(numbers[-1])
-                                amount = float(numbers[-2])
+                                balance = float(balance_str)
+                                amount = float(amount_str)
                                 
-                                reference = rest_of_line[0]
-                                description = " ".join(rest_of_line[1:-2])
-                                
-                                # Extract Currency and IBAN from the key for the final DataFrame
+                                # Extract Currency and IBAN from the key
                                 iban, currency = current_account_key.split('-')
-
+                                
                                 data.append([
                                     date, reference, description, amount, balance, 
                                     currency, iban 
                                 ])
                             except ValueError:
+                                # Skip lines where the amount/balance couldn't be converted to a number
                                 continue
 
-        # --- DIAGNOSTIC LINE ADDED HERE ---
-        st.info(f"Diagnostic: Number of transaction rows found: {len(data)}")
-        # ----------------------------------
-        
         # -------------------------------------------
         # STEP 3: SMART DOWNLOAD LOGIC
         # -------------------------------------------
@@ -124,37 +125,35 @@ if uploaded_file:
             
             with col1:
                 st.subheader("Data Preview")
-                st.dataframe(df, use_container_width=True)
+                # Drop IBAN for cleaner display, but keep it in the download
+                st.dataframe(df.drop(columns=['IBAN']), use_container_width=True)
 
             with col2:
                 st.subheader("Download Files")
-                # Group by the unique account identifier (IBAN-Currency)
                 unique_account_keys = df["IBAN"] + "-" + df["Currency"]
                 
-                # Function to generate CSV data
                 def generate_csv_data(df_to_write):
                     return df_to_write.to_csv(index=False).encode('utf-8')
 
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, "w") as zf:
                     for account_key in unique_account_keys.unique():
-                        # Get the subset of transactions for this specific account
                         iban, currency = account_key.split('-')
-                        subset_df = df[(df["IBAN"] == iban) & (df["Currency"] == currency)]
+                        subset_df = df[(df["IBAN"] == iban) & (df["Currency"] == currency)].copy()
                         
                         csv_data = generate_csv_data(subset_df)
                         
-                        # New File Naming: Currency-Last3DigitsOfIBAN.csv (e.g., AED-940.csv)
+                        # File Naming: Currency-Last3DigitsOfIBAN.csv (e.g., AED-940.csv)
                         file_name = f"{currency}-{iban[-3:]}.csv"
                         zf.writestr(file_name, csv_data)
 
-                st.download_button(
-                    label=f"📦 Download All {len(unique_account_keys.unique())} Accounts (ZIP)",
-                    data=zip_buffer.getvalue(),
-                    file_name="Wio_Statements_Split_by_Account.zip",
-                    mime="application/zip",
-                    key='multi_account_download'
-                )
+                    st.download_button(
+                        label=f"📦 Download All {len(unique_account_keys.unique())} Accounts (ZIP)",
+                        data=zip_buffer.getvalue(),
+                        file_name="Wio_Statements_Split_by_Account.zip",
+                        mime="application/zip",
+                        key='multi_account_download'
+                    )
             
         else:
-            st.error("❌ No transactions found. Please check the PDF for errors or ensure it contains transaction data.")
+            st.error("❌ No transactions found. The PDF format may have changed. Please contact the developer.")
